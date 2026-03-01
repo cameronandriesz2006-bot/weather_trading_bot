@@ -53,6 +53,15 @@ class Settings(BaseSettings):
     # Volume filter
     MIN_MARKET_VOLUME: float = 100.0  # Low volume for 5-min markets
 
+    # Weather trading settings
+    WEATHER_ENABLED: bool = True
+    WEATHER_SCAN_INTERVAL_SECONDS: int = 300  # 5 min
+    WEATHER_SETTLEMENT_INTERVAL_SECONDS: int = 1800  # 30 min
+    WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% — weather has more signal than 5-min BTC
+    WEATHER_MAX_ENTRY_PRICE: float = 0.70
+    WEATHER_MAX_TRADE_SIZE: float = 100.0
+    WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver"
+
     class Config:
         env_file = ".env"
 

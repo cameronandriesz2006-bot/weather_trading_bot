@@ -7,7 +7,7 @@ import { TradesTable } from './components/TradesTable'
 import { EquityChart } from './components/EquityChart'
 import { Terminal } from './components/Terminal'
 import { formatCountdown } from './utils'
-import type { BtcWindow, Microstructure, CalibrationSummary } from './types'
+import type { BtcWindow, Microstructure, CalibrationSummary, WeatherForecast, WeatherSignal } from './types'
 
 function WindowPill({ window: w }: { window: BtcWindow }) {
   const [countdown, setCountdown] = useState(w.time_until_end)
@@ -105,6 +105,49 @@ function CalibrationPanel({ calibration }: { calibration: CalibrationSummary }) 
   )
 }
 
+function WeatherPanel({ forecasts, signals }: { forecasts: WeatherForecast[]; signals: WeatherSignal[] }) {
+  const actionableWx = signals.filter(s => s.actionable)
+
+  return (
+    <div className="space-y-1.5 text-[10px]">
+      {forecasts.length === 0 && signals.length === 0 && (
+        <div className="text-neutral-600">No weather data yet</div>
+      )}
+      {forecasts.map(f => (
+        <div key={f.city_key} className="flex items-center justify-between">
+          <span className="text-neutral-400">{f.city_name}</span>
+          <div className="flex items-center gap-2">
+            <span className="tabular-nums text-neutral-300">
+              H:{f.mean_high.toFixed(0)}F<span className="text-neutral-600">+/-{f.std_high.toFixed(0)}</span>
+            </span>
+            <span className="tabular-nums text-neutral-300">
+              L:{f.mean_low.toFixed(0)}F<span className="text-neutral-600">+/-{f.std_low.toFixed(0)}</span>
+            </span>
+            <span className={`tabular-nums ${f.ensemble_agreement > 0.7 ? 'text-green-500' : 'text-amber-500'}`}>
+              {(f.ensemble_agreement * 100).toFixed(0)}%
+            </span>
+          </div>
+        </div>
+      ))}
+      {actionableWx.length > 0 && (
+        <div className="pt-1 border-t border-neutral-800">
+          <div className="text-[9px] text-amber-500 mb-1">{actionableWx.length} actionable signal{actionableWx.length !== 1 ? 's' : ''}</div>
+          {actionableWx.slice(0, 3).map((s, i) => (
+            <div key={i} className="flex items-center justify-between text-[9px]">
+              <span className="text-neutral-400 truncate max-w-[120px]">
+                {s.city_name} {s.metric} {s.direction} {s.threshold_f}F
+              </span>
+              <span className={`tabular-nums ${s.edge > 0 ? 'text-green-500' : 'text-red-500'}`}>
+                {(s.edge * 100).toFixed(1)}%
+              </span>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  )
+}
+
 function App() {
   const queryClient = useQueryClient()
 
@@ -139,6 +182,8 @@ function App() {
   const btcPrice = data?.btc_price
   const micro = data?.microstructure
   const windows = data?.windows ?? []
+  const weatherSignals = data?.weather_signals ?? []
+  const weatherForecasts = data?.weather_forecasts ?? []
 
   const stats = data?.stats ?? {
     is_running: false,
@@ -189,7 +234,7 @@ function App() {
       {/* Top bar */}
       <header className="shrink-0 border-b border-neutral-800 px-3 py-1.5 flex items-center gap-4">
         <div className="flex items-center gap-2 shrink-0">
-          <h1 className="text-xs font-semibold text-neutral-100 uppercase tracking-wider whitespace-nowrap">BTC 5m Bot</h1>
+          <h1 className="text-xs font-semibold text-neutral-100 uppercase tracking-wider whitespace-nowrap">Trading Bot</h1>
           <span className={`px-1.5 py-0.5 text-[9px] font-medium uppercase ${
             stats.is_running
               ? 'bg-green-500/10 text-green-500 border border-green-500/20'
@@ -280,6 +325,17 @@ function App() {
             </div>
           )}
 
+          {/* Weather forecasts */}
+          {(weatherForecasts.length > 0 || weatherSignals.length > 0) && (
+            <div className="shrink-0 border-b border-neutral-800 px-2 py-2">
+              <div className="flex items-center justify-between mb-1.5">
+                <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Weather</span>
+                <span className="px-1 py-0.5 text-[8px] font-medium uppercase bg-cyan-500/10 text-cyan-400 border border-cyan-500/20">WX</span>
+              </div>
+              <WeatherPanel forecasts={weatherForecasts} signals={weatherSignals} />
+            </div>
+          )}
+
           {/* Terminal */}
           <div className="flex-1 min-h-0">
             <Terminal
@@ -298,9 +354,12 @@ function App() {
           <div className="px-2 py-1 border-b border-neutral-800 flex items-center justify-between shrink-0">
             <span className="text-[10px] text-neutral-500 uppercase tracking-wider">Signals</span>
             <div className="flex items-center gap-2">
-              <span className="text-[10px] text-neutral-600">{activeSignals.length} total</span>
+              <span className="text-[10px] text-neutral-600">{activeSignals.length} BTC</span>
+              {weatherSignals.length > 0 && (
+                <span className="text-[10px] text-cyan-400">{weatherSignals.length} WX</span>
+              )}
               <span className="px-1.5 py-0.5 text-[9px] font-medium bg-amber-500/10 text-amber-500 border border-amber-500/20">
-                {actionableCount} actionable
+                {actionableCount + weatherSignals.filter(s => s.actionable).length} actionable
               </span>
             </div>
           </div>
@@ -327,7 +386,7 @@ function App() {
 
       {/* Footer */}
       <footer className="shrink-0 border-t border-neutral-800 px-3 py-0.5 text-center text-neutral-700 text-[10px]">
-        Binance/Coinbase + Polymarket | BTC 5-min Up/Down | Simulation
+        Binance/Coinbase + Open-Meteo + Polymarket | BTC 5-min + Weather Temp | Simulation
       </footer>
     </div>
   )

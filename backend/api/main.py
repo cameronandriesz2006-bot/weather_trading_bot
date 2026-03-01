@@ -154,6 +154,53 @@ class CalibrationSummary(BaseModel):
     brier_score: float
 
 
+class WeatherForecastResponse(BaseModel):
+    city_key: str
+    city_name: str
+    target_date: str
+    mean_high: float
+    std_high: float
+    mean_low: float
+    std_low: float
+    num_members: int
+    ensemble_agreement: float
+
+
+class WeatherMarketResponse(BaseModel):
+    slug: str
+    market_id: str
+    title: str
+    city_key: str
+    city_name: str
+    target_date: str
+    threshold_f: float
+    metric: str
+    direction: str
+    yes_price: float
+    no_price: float
+    volume: float
+
+
+class WeatherSignalResponse(BaseModel):
+    market_id: str
+    city_key: str
+    city_name: str
+    target_date: str
+    threshold_f: float
+    metric: str
+    direction: str
+    model_probability: float
+    market_probability: float
+    edge: float
+    confidence: float
+    suggested_size: float
+    reasoning: str
+    ensemble_mean: float
+    ensemble_std: float
+    ensemble_members: int
+    actionable: bool = False
+
+
 class DashboardData(BaseModel):
     stats: BotStats
     btc_price: Optional[BtcPriceResponse]
@@ -163,6 +210,8 @@ class DashboardData(BaseModel):
     recent_trades: List[TradeResponse]
     equity_curve: List[dict]
     calibration: Optional[CalibrationSummary] = None
+    weather_signals: List[WeatherSignalResponse] = []
+    weather_forecasts: List[WeatherForecastResponse] = []
 
 
 class EventResponse(BaseModel):
@@ -216,10 +265,14 @@ async def startup():
     start_scheduler()
     log_event("success", "BTC 5-min trading bot initialized")
 
-    print("Bot is now running - BTC 5-MIN MODE!")
-    print(f"  - Market scan: every {settings.SCAN_INTERVAL_SECONDS}s")
+    print("Bot is now running!")
+    print(f"  - BTC scan: every {settings.SCAN_INTERVAL_SECONDS}s (edge >= {settings.MIN_EDGE_THRESHOLD:.0%})")
     print(f"  - Settlement check: every {settings.SETTLEMENT_INTERVAL_SECONDS}s")
-    print(f"  - Min edge: {settings.MIN_EDGE_THRESHOLD:.0%}")
+    if settings.WEATHER_ENABLED:
+        print(f"  - Weather scan: every {settings.WEATHER_SCAN_INTERVAL_SECONDS}s (edge >= {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%})")
+        print(f"  - Weather cities: {settings.WEATHER_CITIES}")
+    else:
+        print("  - Weather trading: DISABLED")
     print("=" * 60)
 
 
@@ -443,18 +496,32 @@ async def run_scan(db: Session = Depends(get_db)):
         state.last_run = datetime.utcnow()
         db.commit()
 
-    log_event("info", "Manual BTC scan triggered")
+    log_event("info", "Manual scan triggered (BTC + Weather)")
     await run_manual_scan()
 
     signals = await scan_for_signals()
     actionable = [s for s in signals if s.passes_threshold]
 
-    return {
+    result = {
         "status": "ok",
         "total_signals": len(signals),
         "actionable_signals": len(actionable),
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat(),
     }
+
+    # Also run weather scan if enabled
+    if settings.WEATHER_ENABLED:
+        try:
+            from backend.core.weather_signals import scan_for_weather_signals
+            wx_signals = await scan_for_weather_signals()
+            wx_actionable = [s for s in wx_signals if s.passes_threshold]
+            result["weather_signals"] = len(wx_signals)
+            result["weather_actionable"] = len(wx_actionable)
+        except Exception:
+            result["weather_signals"] = 0
+            result["weather_actionable"] = 0
+
+    return result
 
 
 @app.post("/api/settle-trades")
@@ -557,6 +624,112 @@ async def get_calibration(db: Session = Depends(get_db)):
     summary = _compute_calibration_summary(db)
 
     return {"buckets": buckets, "summary": summary}
+
+
+# Weather endpoints
+@app.get("/api/weather/forecasts", response_model=List[WeatherForecastResponse])
+async def get_weather_forecasts():
+    """Get ensemble forecasts for configured cities."""
+    if not settings.WEATHER_ENABLED:
+        return []
+
+    try:
+        from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
+        from datetime import date
+
+        city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+        forecasts = []
+
+        for city_key in city_keys:
+            if city_key not in CITY_CONFIG:
+                continue
+            forecast = await fetch_ensemble_forecast(city_key)
+            if forecast:
+                forecasts.append(WeatherForecastResponse(
+                    city_key=forecast.city_key,
+                    city_name=forecast.city_name,
+                    target_date=forecast.target_date.isoformat(),
+                    mean_high=forecast.mean_high,
+                    std_high=forecast.std_high,
+                    mean_low=forecast.mean_low,
+                    std_low=forecast.std_low,
+                    num_members=forecast.num_members,
+                    ensemble_agreement=forecast.ensemble_agreement,
+                ))
+
+        return forecasts
+    except Exception:
+        return []
+
+
+@app.get("/api/weather/markets", response_model=List[WeatherMarketResponse])
+async def get_weather_markets():
+    """Get active weather temperature markets."""
+    if not settings.WEATHER_ENABLED:
+        return []
+
+    try:
+        from backend.data.weather_markets import fetch_polymarket_weather_markets
+
+        city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+        markets = await fetch_polymarket_weather_markets(city_keys)
+
+        return [
+            WeatherMarketResponse(
+                slug=m.slug,
+                market_id=m.market_id,
+                title=m.title,
+                city_key=m.city_key,
+                city_name=m.city_name,
+                target_date=m.target_date.isoformat(),
+                threshold_f=m.threshold_f,
+                metric=m.metric,
+                direction=m.direction,
+                yes_price=m.yes_price,
+                no_price=m.no_price,
+                volume=m.volume,
+            )
+            for m in markets
+        ]
+    except Exception:
+        return []
+
+
+@app.get("/api/weather/signals", response_model=List[WeatherSignalResponse])
+async def get_weather_signals():
+    """Get current weather trading signals."""
+    if not settings.WEATHER_ENABLED:
+        return []
+
+    try:
+        from backend.core.weather_signals import scan_for_weather_signals
+
+        signals = await scan_for_weather_signals()
+        return [_weather_signal_to_response(s) for s in signals]
+    except Exception:
+        return []
+
+
+def _weather_signal_to_response(s) -> WeatherSignalResponse:
+    return WeatherSignalResponse(
+        market_id=s.market.market_id,
+        city_key=s.market.city_key,
+        city_name=s.market.city_name,
+        target_date=s.market.target_date.isoformat(),
+        threshold_f=s.market.threshold_f,
+        metric=s.market.metric,
+        direction=s.direction,
+        model_probability=s.model_probability,
+        market_probability=s.market_probability,
+        edge=s.edge,
+        confidence=s.confidence,
+        suggested_size=s.suggested_size,
+        reasoning=s.reasoning,
+        ensemble_mean=s.ensemble_mean,
+        ensemble_std=s.ensemble_std,
+        ensemble_members=s.ensemble_members,
+        actionable=s.passes_threshold,
+    )
 
 
 @app.get("/api/events", response_model=List[EventResponse])
@@ -748,6 +921,37 @@ async def get_dashboard(db: Session = Depends(get_db)):
     # Calibration summary
     calibration = _compute_calibration_summary(db)
 
+    # Weather data (if enabled)
+    weather_signals_data = []
+    weather_forecasts_data = []
+    if settings.WEATHER_ENABLED:
+        try:
+            from backend.core.weather_signals import scan_for_weather_signals
+            from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
+
+            wx_signals = await scan_for_weather_signals()
+            weather_signals_data = [_weather_signal_to_response(s) for s in wx_signals]
+
+            city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
+            for city_key in city_keys:
+                if city_key not in CITY_CONFIG:
+                    continue
+                forecast = await fetch_ensemble_forecast(city_key)
+                if forecast:
+                    weather_forecasts_data.append(WeatherForecastResponse(
+                        city_key=forecast.city_key,
+                        city_name=forecast.city_name,
+                        target_date=forecast.target_date.isoformat(),
+                        mean_high=forecast.mean_high,
+                        std_high=forecast.std_high,
+                        mean_low=forecast.mean_low,
+                        std_low=forecast.std_low,
+                        num_members=forecast.num_members,
+                        ensemble_agreement=forecast.ensemble_agreement,
+                    ))
+        except Exception:
+            pass
+
     return DashboardData(
         stats=stats,
         btc_price=btc_price_data,
@@ -757,6 +961,8 @@ async def get_dashboard(db: Session = Depends(get_db)):
         recent_trades=recent_trades,
         equity_curve=equity_curve,
         calibration=calibration,
+        weather_signals=weather_signals_data,
+        weather_forecasts=weather_forecasts_data,
     )
 
 

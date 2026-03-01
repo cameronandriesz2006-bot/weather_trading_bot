@@ -26,6 +26,7 @@ class Trade(Base):
     market_ticker = Column(String, index=True)
     platform = Column(String)
     event_slug = Column(String, nullable=True)
+    market_type = Column(String, default="btc", index=True)  # "btc" or "weather"
 
     # Trade details
     direction = Column(String)  # "up" or "down"
@@ -76,6 +77,7 @@ class Signal(Base):
     id = Column(Integer, primary_key=True, index=True)
     market_ticker = Column(String, index=True)
     platform = Column(String)
+    market_type = Column(String, default="btc", index=True)  # "btc" or "weather"
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
     direction = Column(String)
@@ -167,6 +169,11 @@ def ensure_schema():
             with conn.begin():
                 conn.execute(text(stmt))
 
+    if "market_type" not in columns:
+        with engine.connect() as conn:
+            with conn.begin():
+                conn.execute(text("ALTER TABLE trades ADD COLUMN market_type VARCHAR DEFAULT 'btc'"))
+
     # Add calibration columns to signals table
     try:
         signal_columns = [col["name"] for col in inspector.get_columns("signals")]
@@ -180,6 +187,7 @@ def ensure_schema():
                 ("outcome_correct", "BOOLEAN"),
                 ("settlement_value", "FLOAT"),
                 ("settled_at", "DATETIME"),
+                ("market_type", "VARCHAR DEFAULT 'btc'"),
             ]:
                 if col not in signal_columns:
                     try:
