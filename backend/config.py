@@ -28,47 +28,31 @@ class Settings(BaseSettings):
     AI_LOG_ALL_CALLS: bool = True
     AI_DAILY_BUDGET_USD: float = 1.0
 
-    # Bot settings - BTC 5-MIN TRADING
+    # Bot settings
     SIMULATION_MODE: bool = True
     INITIAL_BANKROLL: float = 10000.0
-    KELLY_FRACTION: float = 0.15  # Fractional Kelly
+    KELLY_FRACTION: float = 0.15  # Fractional Kelly (shared sizing helper)
 
-    # BTC 5-min specific settings
-    SCAN_INTERVAL_SECONDS: int = 60  # Scan every minute
-    SETTLEMENT_INTERVAL_SECONDS: int = 120  # Check settlements every 2 min
-    BTC_PRICE_SOURCE: str = "coinbase"
-    MIN_EDGE_THRESHOLD: float = 0.02  # 2% edge required — these are 50/50 markets
-    MAX_ENTRY_PRICE: float = 0.55  # Enter up to 55c
-    MAX_TRADES_PER_WINDOW: int = 1
-    MAX_TOTAL_PENDING_TRADES: int = 20
+    # Settlement cadence (shared — settles all trade types)
+    SETTLEMENT_INTERVAL_SECONDS: int = 120
 
     # Risk management
     DAILY_LOSS_LIMIT: float = 300.0
-    MAX_TRADE_SIZE: float = 75.0
-    MIN_TIME_REMAINING: int = 60  # Don't trade windows closing in < 60s
-    MAX_TIME_REMAINING: int = 1800  # Trade windows up to 30min out
-
-    # Indicator weights for composite signal (must sum to ~1.0)
-    WEIGHT_RSI: float = 0.20
-    WEIGHT_MOMENTUM: float = 0.35
-    WEIGHT_VWAP: float = 0.20
-    WEIGHT_SMA: float = 0.15
-    WEIGHT_MARKET_SKEW: float = 0.10
-
-    # Volume filter
-    MIN_MARKET_VOLUME: float = 100.0  # Low volume for 5-min markets
+    MAX_TRADE_SIZE: float = 75.0  # Per-trade hard cap inside the Kelly helper
+    MAX_TOTAL_PENDING_TRADES: int = 20
 
     # Weather trading settings
     WEATHER_ENABLED: bool = True
     WEATHER_SCAN_INTERVAL_SECONDS: int = 300  # 5 min
     WEATHER_SETTLEMENT_INTERVAL_SECONDS: int = 1800  # 30 min
-    WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% — weather has more signal than 5-min BTC
+    WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% minimum edge to trade
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
     WEATHER_MAX_TRADE_SIZE: float = 100.0
     WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver"
 
     class Config:
         env_file = ".env"
+        extra = "ignore"  # tolerate leftover/unknown keys in .env (e.g. removed BTC settings)
 
 
 settings = Settings()
