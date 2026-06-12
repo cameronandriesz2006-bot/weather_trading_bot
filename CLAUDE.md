@@ -31,8 +31,8 @@ serves a React dashboard.
 | 0 | Run unchanged in simulation; commit known-good baseline | done (repo runs) |
 | 1 | **Cut crypto cleanly** — extracted `calculate_edge`/`calculate_kelly_size` to `backend/core/sizing.py`; deleted `signals.py`/`crypto.py`/`btc_markets.py`/`markets.py`; removed BTC scan job; BTC endpoints now empty stubs; dropped BTC-only config | **done** |
 | 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **done** |
-| 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess, Kalshi structured fields) | **next** |
-| 4 | Honest probability — fitted+widened distribution, lead-time uncertainty, bias correction, climatology blend | |
+| 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess) | **done** (Polymarket; Kalshi structured-fields part deferred until Kalshi is enabled) |
+| 4 | Honest probability — fitted+widened distribution, lead-time uncertainty, bias correction, climatology blend | **next** |
 | 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | |
 | 6 | Real costs — subtract fees+spread before edge check and in P&L; add fee field; re-tune sizing; weather daily-loss stop | |
 | 7 | Run weeks in simulation; decision point: does it beat the price net of fees? | |
@@ -67,16 +67,18 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
    = raw [81.5,83.5)). `WeatherMarket.threshold_f`/`direction` are compat properties so the API
    /frontend contract is unchanged. Verified: 85 markets / 85 signals via the live API.
 
-3. **Wrong location/station (Phase 3) — IN PROGRESS.** `CITY_CONFIG` (`backend/data/weather.py`)
-   forecasts the wrong spot for some cities. Polymarket settlement stations (from market
-   descriptions): NYC = **LaGuardia (KLGA)** not Central Park (KNYC); Denver = **Buckley SFB
-   (KBKF)** not Denver Intl (KDEN); Chicago=KORD, Miami=KMIA, LA=KLAX already correct. Point each
-   city's forecast lat/lon at the settlement station. NWS observed-temp is unused for Polymarket
-   settlement (Polymarket resolves from its own market outcome), so station only affects the
-   forecast. Kalshi may use *different* stations — verify separately when Kalshi is enabled.
+3. **Wrong location/station (Phase 3) — FIXED.** `CITY_CONFIG` (`backend/data/weather.py`) now
+   points each city's lat/lon at the **settlement station** (not city centre): NYC = LaGuardia
+   (KLGA, was Central Park), Denver = Buckley SFB (KBKF, was Denver Intl), and Chicago/Miami/LA
+   were moved from downtown to their airports (KORD/KMIA/KLAX) — airport vs downtown can differ
+   several degrees (esp. coastal LAX). Unused `nws_office`/`nws_gridpoint` fields removed. NWS
+   observed-temp stays unused for Polymarket settlement (it resolves from its own market outcome),
+   so station only affects the forecast. Kalshi may settle on *different* stations — verify before
+   enabling it.
 
-4. **UTC vs local day (Phase 3) — TODO.** Open-Meteo daily max/min is computed over a UTC day,
-   not the market's local day. Add `timezone` to the forecast request.
+4. **UTC vs local day (Phase 3) — FIXED.** The Open-Meteo ensemble request now passes
+   `timezone=auto`, so the daily high/low is aggregated over the station's local calendar day
+   (the day markets settle on) rather than a UTC day.
 
 5. **Overconfident forecast (Phase 4).** Probability = raw fraction of ensemble members
    past the threshold; `mean`/`std` are computed in `EnsembleForecast` then thrown away.

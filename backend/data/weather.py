@@ -9,47 +9,46 @@ import time
 
 logger = logging.getLogger("trading_bot")
 
-# City configurations with lat/lon and NWS station identifiers
+# City configurations. lat/lon point at the exact station each market SETTLES on
+# (Polymarket daily-temperature markets, per their resolution descriptions), not
+# the city centre — airport vs downtown can differ by several degrees. The forecast
+# must target the settlement station to be comparable to the resolved value.
+# NOTE: Kalshi may settle on different stations; verify separately before enabling it.
 CITY_CONFIG: Dict[str, dict] = {
     "nyc": {
         "name": "New York City",
-        "lat": 40.7128,
-        "lon": -74.0060,
-        "nws_station": "KNYC",
-        "nws_office": "OKX",
-        "nws_gridpoint": "OKX/33,37",
+        # Settles on LaGuardia Airport (KLGA), NOT Central Park (KNYC).
+        "lat": 40.7792,
+        "lon": -73.8800,
+        "nws_station": "KLGA",
     },
     "chicago": {
         "name": "Chicago",
-        "lat": 41.8781,
-        "lon": -87.6298,
+        # Chicago O'Hare Intl (KORD).
+        "lat": 41.9950,
+        "lon": -87.9336,
         "nws_station": "KORD",
-        "nws_office": "LOT",
-        "nws_gridpoint": "LOT/75,72",
     },
     "miami": {
         "name": "Miami",
-        "lat": 25.7617,
-        "lon": -80.1918,
+        # Miami Intl (KMIA).
+        "lat": 25.7906,
+        "lon": -80.3164,
         "nws_station": "KMIA",
-        "nws_office": "MFL",
-        "nws_gridpoint": "MFL/75,53",
     },
     "los_angeles": {
         "name": "Los Angeles",
-        "lat": 34.0522,
-        "lon": -118.2437,
+        # Los Angeles Intl (KLAX) — coastal, much cooler than downtown.
+        "lat": 33.9381,
+        "lon": -118.3889,
         "nws_station": "KLAX",
-        "nws_office": "LOX",
-        "nws_gridpoint": "LOX/154,44",
     },
     "denver": {
         "name": "Denver",
-        "lat": 39.7392,
-        "lon": -104.9903,
-        "nws_station": "KDEN",
-        "nws_office": "BOU",
-        "nws_gridpoint": "BOU/62,60",
+        # Settles on Buckley Space Force Base (KBKF) in Aurora, NOT Denver Intl (KDEN).
+        "lat": 39.7172,
+        "lon": -104.7517,
+        "nws_station": "KBKF",
     },
 }
 
@@ -176,6 +175,9 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
                 "start_date": target_date.isoformat(),
                 "end_date": target_date.isoformat(),
                 "models": "gfs_seamless",
+                # Aggregate the daily high/low over the station's LOCAL day, not a
+                # UTC day — markets settle on the local calendar day.
+                "timezone": "auto",
             }
 
             response = await client.get(
