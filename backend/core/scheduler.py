@@ -98,6 +98,18 @@ async def weather_scan_and_trade_job():
                 log_event("info", f"Weather allocation limit reached: ${weather_pending:.0f}/${MAX_WEATHER_ALLOCATION:.0f}")
                 return
 
+            # --- Daily loss circuit breaker (Phase 6: now guards weather too) ---
+            today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+            daily_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
+                Trade.settled == True,
+                Trade.settlement_time >= today_start,
+            ).scalar()
+            if daily_pnl <= -settings.DAILY_LOSS_LIMIT:
+                log_event("warning",
+                    f"Daily loss limit hit: ${daily_pnl:.2f} (limit: -${settings.DAILY_LOSS_LIMIT:.0f}). "
+                    f"Stopping weather trades.")
+                return
+
             trades_executed = 0
             for signal in actionable[:MAX_TRADES_PER_SCAN]:
                 # Check if we already have a trade for this market
@@ -119,7 +131,9 @@ async def weather_scan_and_trade_job():
                 if trades_executed >= MAX_TRADES_PER_SCAN:
                     break
 
-                entry_price = signal.market.yes_price if signal.direction == "yes" else signal.market.no_price
+                # Enter at the effective (cost-adjusted) ask, and book the fee.
+                entry_price = signal.entry_price
+                fee = settings.WEATHER_FEE_RATE * trade_size
 
                 trade = Trade(
                     market_ticker=signal.market.market_id,
@@ -129,6 +143,7 @@ async def weather_scan_and_trade_job():
                     direction=signal.direction,
                     entry_price=entry_price,
                     size=trade_size,
+                    fee=fee,
                     model_probability=signal.model_probability,
                     market_price_at_entry=signal.market_probability,
                     edge_at_entry=signal.edge,

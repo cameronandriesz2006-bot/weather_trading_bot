@@ -20,9 +20,14 @@ class WeatherTradingSignal:
 
     # Core signal data
     model_probability: float = 0.5   # Ensemble probability of YES outcome
-    market_probability: float = 0.5  # Market's implied YES probability
-    edge: float = 0.0
+    market_probability: float = 0.5  # Market's implied YES probability (mid)
+    edge: float = 0.0                # gross edge: model - market mid
     direction: str = "yes"           # "yes" or "no"
+
+    # Cost-adjusted economics (Phase 6)
+    net_edge: float = 0.0            # gross edge minus trading costs (spread + fee)
+    entry_price: float = 0.0         # effective entry (ask = mid + spread/2)
+    cost: float = 0.0                # per-share cost in price units (spread/2 + fee)
 
     # Confidence and sizing
     confidence: float = 0.5
@@ -41,8 +46,12 @@ class WeatherTradingSignal:
 
     @property
     def passes_threshold(self) -> bool:
-        """Check if signal passes minimum edge threshold."""
-        return abs(self.edge) >= settings.WEATHER_MIN_EDGE_THRESHOLD
+        """Actionable only if the edge clears the threshold AFTER costs and the
+        effective entry price is within the cap."""
+        return (
+            self.net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
+            and 0 < self.entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
+        )
 
 
 async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTradingSignal]:
@@ -71,46 +80,62 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
 
     market_yes_prob = market.yes_price
 
-    # Use existing edge calculation (treats yes=up, no=down)
+    # Gross edge & chosen side from the market MID (treats yes=up, no=down)
     edge, direction_raw = calculate_edge(model_yes_prob, market_yes_prob)
     direction = "yes" if direction_raw == "up" else "no"
 
-    # Entry price filter
-    entry_price = market.yes_price if direction == "yes" else market.no_price
-    if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
-        edge = 0.0  # Zero out but still return for UI visibility
+    # --- Trading costs (Phase 6) ---
+    # The dominant cost on Polymarket is crossing the bid/ask spread: we enter
+    # at the ask (mid + spread/2). Fees are added on top if configured.
+    spread_used = market.spread if market.spread and market.spread > 0 else settings.WEATHER_DEFAULT_SPREAD
+    half_spread = spread_used / 2.0
+    cost = half_spread + settings.WEATHER_FEE_RATE
+
+    side_mid = market.yes_price if direction == "yes" else market.no_price
+    entry_price = min(0.999, side_mid + half_spread)   # effective ask we'd pay
+
+    # Edge after costs — this is what we actually gate and size on.
+    net_edge = edge - cost
 
     # Confidence = how sharply the ensemble is concentrated (one-sided around median).
     confidence = min(0.9, forecast.ensemble_agreement)
 
-    # Kelly sizing
+    # Kelly sizing on the COST-ADJUSTED economics: pass the effective entry price
+    # for the chosen side so the spread is baked into the odds.
     bankroll = settings.INITIAL_BANKROLL
-    suggested_size = calculate_kelly_size(
-        edge=abs(edge),
-        probability=model_yes_prob,
-        market_price=market_yes_prob,
-        direction=direction_raw,  # calculate_kelly_size expects "up"/"down"
-        bankroll=bankroll,
-    )
-    suggested_size = min(suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
+    kelly_market_price = entry_price if direction == "yes" else (1.0 - entry_price)
+    if net_edge > 0:
+        suggested_size = calculate_kelly_size(
+            edge=net_edge,
+            probability=model_yes_prob,
+            market_price=kelly_market_price,
+            direction=direction_raw,  # calculate_kelly_size expects "up"/"down"
+            bankroll=bankroll,
+        )
+        suggested_size = min(suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
+    else:
+        suggested_size = 0.0
 
     # Ensemble stats for display
     mean_val = forecast.mean_high if market.metric == "high" else forecast.mean_low
     std_val = forecast.std_high if market.metric == "high" else forecast.std_low
 
     # Build reasoning
-    filter_status = "ACTIONABLE" if abs(edge) >= settings.WEATHER_MIN_EDGE_THRESHOLD else "FILTERED"
+    actionable = (net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
+                  and 0 < entry_price <= settings.WEATHER_MAX_ENTRY_PRICE)
     filter_notes = []
     if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
         filter_notes.append(f"entry {entry_price:.0%} > {settings.WEATHER_MAX_ENTRY_PRICE:.0%}")
+    if net_edge < settings.WEATHER_MIN_EDGE_THRESHOLD:
+        filter_notes.append(f"net edge {net_edge:.1%} < {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}")
     filter_note = f" [{', '.join(filter_notes)}]" if filter_notes else ""
 
     reasoning = (
-        f"[{filter_status}]{filter_note} "
+        f"[{'ACTIONABLE' if actionable else 'FILTERED'}]{filter_note} "
         f"{market.city_name} {market.metric} {market.bucket_label} on {market.target_date} | "
         f"Ensemble: {mean_val:.1f}F +/- {std_val:.1f}F ({forecast.num_members} members) | "
         f"Model YES: {model_yes_prob:.0%} vs Market: {market_yes_prob:.0%} | "
-        f"Edge: {edge:+.1%} -> {direction.upper()} @ {entry_price:.0%}"
+        f"Edge: {edge:+.1%} -cost {cost:.1%} = net {net_edge:+.1%} -> {direction.upper()} @ {entry_price:.0%}"
     )
 
     return WeatherTradingSignal(
@@ -119,6 +144,9 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
         market_probability=market_yes_prob,
         edge=edge,
         direction=direction,
+        net_edge=net_edge,
+        entry_price=entry_price,
+        cost=cost,
         confidence=confidence,
         kelly_fraction=suggested_size / bankroll if bankroll > 0 else 0,
         suggested_size=suggested_size,

@@ -33,8 +33,8 @@ serves a React dashboard.
 | 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **done** |
 | 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess) | **done** (Polymarket; Kalshi structured-fields part deferred until Kalshi is enabled) |
 | 4 | Honest probability — fitted+widened distribution + lead-time uncertainty **done**; bias correction & climatology **deferred** (need run-time forecast-vs-actual history; markets are 0–1 day out so climatology barely matters) | core **done** |
-| 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | **next** |
-| 6 | Real costs — subtract fees+spread before edge check and in P&L; add fee field; re-tune sizing; weather daily-loss stop | |
+| 6 | Real costs — subtract fees+spread before edge check and in P&L; add fee field; re-tune sizing; weather daily-loss stop | **done** |
+| 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | next (or run-and-evaluate, Phase 7, first) |
 | 7 | Run weeks in simulation; decision point: does it beat the price net of fees? | |
 | 7+ | Profitability levers (selectivity, intraday, threshold tuning, exit logic, more cities) | |
 | 8 | Optional observe-only cross-platform arbitrage scanner | |
@@ -91,8 +91,17 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
    produce by running, and at 0–1 day lead climatology adds little. `_fraction_in_range` is
    kept as a raw reference but is no longer the traded probability.
 
-6. **No fees anywhere (Phase 6).** Edge threshold and simulated P&L ignore fees and
-   spread; there is no fee field on the trade record.
+6. **No fees anywhere (Phase 6) — FIXED.** The dominant Polymarket cost is the bid/ask
+   spread, so the signal now enters at the effective **ask** (`mid + spread/2`, live spread
+   captured into `WeatherMarket.spread`) and gates/sizes on **net edge** (`gross − spread/2 −
+   fee`); `passes_threshold` also enforces the entry-price cap. P&L is net of fees: a `fee`
+   column was added to `Trade` (migrated in `ensure_schema`, which now logs failures loudly)
+   and `calculate_pnl` subtracts it (spread is already in `entry_price`). Config knobs:
+   `WEATHER_DEFAULT_SPREAD`, `WEATHER_FEE_RATE` (0 for Polymarket; set for Kalshi). Kelly
+   fraction lowered 0.25→0.10 (honest probs need less aggression). The daily-loss circuit
+   breaker now guards the weather job too (was crypto-only). Wide-spread illiquid buckets are
+   correctly filtered (e.g. a +30% gross edge can drop below 8% net). Tests:
+   `tests/test_weather_signal_costs.py`.
 
 ### Minor cleanup (catch along the way)
 - `database.py ensure_schema()` swallows schema-migration errors silently — make it log

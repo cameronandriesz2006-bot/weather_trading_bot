@@ -1,4 +1,5 @@
-"""Database models and connection for BTC 5-min trading bot."""
+"""Database models and connection for the weather trading bot."""
+import logging
 from datetime import datetime
 from typing import Optional
 from sqlalchemy import create_engine, Column, Integer, String, Float, DateTime, Boolean, JSON, text
@@ -8,6 +9,8 @@ from sqlalchemy import inspect
 import enum
 
 from backend.config import settings
+
+logger = logging.getLogger("trading_bot")
 
 engine = create_engine(
     settings.DATABASE_URL,
@@ -39,7 +42,8 @@ class Trade(Base):
     settlement_time = Column(DateTime, nullable=True)
     settlement_value = Column(Float, nullable=True)  # 1.0=Up won, 0.0=Down won
     result = Column(String, default="pending")  # pending, win, loss
-    pnl = Column(Float, nullable=True)
+    pnl = Column(Float, nullable=True)           # net of fees
+    fee = Column(Float, default=0.0)             # trading fee paid at entry (Phase 6)
 
     # Model performance tracking
     model_probability = Column(Float)
@@ -174,6 +178,11 @@ def ensure_schema():
             with conn.begin():
                 conn.execute(text("ALTER TABLE trades ADD COLUMN market_type VARCHAR DEFAULT 'btc'"))
 
+    if "fee" not in columns:
+        with engine.connect() as conn:
+            with conn.begin():
+                conn.execute(text("ALTER TABLE trades ADD COLUMN fee FLOAT DEFAULT 0.0"))
+
     # Add calibration columns to signals table
     try:
         signal_columns = [col["name"] for col in inspector.get_columns("signals")]
@@ -193,8 +202,10 @@ def ensure_schema():
                     try:
                         with conn.begin():
                             conn.execute(text(f"ALTER TABLE signals ADD COLUMN {col} {coltype}"))
-                    except Exception:
-                        pass  # column already exists
+                    except Exception as e:
+                        # Don't fail startup, but don't hide it either — a real
+                        # migration failure here silently breaks calibration.
+                        logger.warning(f"Could not add signals.{col}: {e}")
 
 
 def get_db():

@@ -122,13 +122,16 @@ def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
 
 def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     """
-    Calculate P&L for a trade given the settlement value.
+    Calculate P&L for a trade given the settlement value, NET of fees.
 
     settlement_value: 1.0 if Up/Yes outcome, 0.0 if Down/No outcome
 
     Maps up->yes, down->no internally:
     - UP position wins when settlement = 1.0
     - DOWN position wins when settlement = 0.0
+
+    The spread cost is already baked into trade.entry_price (we enter at the ask);
+    trade.fee is the explicit platform fee and is subtracted here.
     """
     # Map up/down to yes/no logic
     direction = trade.direction
@@ -147,6 +150,8 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
             pnl = trade.size * (1.0 - trade.entry_price)
         else:
             pnl = -trade.size * trade.entry_price
+
+    pnl -= (getattr(trade, "fee", 0.0) or 0.0)
 
     return round(pnl, 2)
 

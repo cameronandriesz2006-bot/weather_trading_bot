@@ -66,8 +66,9 @@ class WeatherMarket:
     low_f: Optional[float]
     high_f: Optional[float]
     bucket_label: str         # human-readable, e.g. "82-83°F"
-    yes_price: float          # Price of YES outcome (0-1)
-    no_price: float           # Price of NO outcome (0-1)
+    yes_price: float          # Price of YES outcome (0-1), ~mid
+    no_price: float           # Price of NO outcome (0-1), ~mid
+    spread: float = 0.0       # live bid/ask spread in price units (cost to cross)
     volume: float = 0.0
     closed: bool = False
 
@@ -196,6 +197,11 @@ def _parse_bucket_market(
     if yes_price <= 0.01 or yes_price >= 0.99:
         return None
 
+    try:
+        spread = float(market_data.get("spread", 0) or 0)
+    except (ValueError, TypeError):
+        spread = 0.0
+
     return WeatherMarket(
         slug=event_slug,
         market_id=str(market_data.get("id", "")),
@@ -210,6 +216,7 @@ def _parse_bucket_market(
         bucket_label=label,
         yes_price=yes_price,
         no_price=no_price,
+        spread=spread,
         volume=float(market_data.get("volume", 0) or 0),
     )
 

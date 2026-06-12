@@ -31,7 +31,10 @@ class Settings(BaseSettings):
     # Bot settings
     SIMULATION_MODE: bool = True
     INITIAL_BANKROLL: float = 10000.0
-    KELLY_FRACTION: float = 0.15  # Fractional Kelly (shared sizing helper)
+    # Fractional Kelly (shared sizing helper). Lowered in Phase 6: with honest
+    # (Phase 4) probabilities we no longer need the aggressive fraction, and
+    # smaller bets are safer until the scoreboard proves an edge. Tune empirically.
+    KELLY_FRACTION: float = 0.10
 
     # Settlement cadence (shared — settles all trade types)
     SETTLEMENT_INTERVAL_SECONDS: int = 120
@@ -49,6 +52,14 @@ class Settings(BaseSettings):
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
     WEATHER_MAX_TRADE_SIZE: float = 100.0
     WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver"
+
+    # Trading costs (Phase 6) — "profit" must mean profit net of costs.
+    # On Polymarket the dominant cost is the bid/ask spread (the live market
+    # spread is used when available; this is the fallback). We enter at the ask
+    # (mid + spread/2) and require the model edge to clear costs before trading.
+    WEATHER_DEFAULT_SPREAD: float = 0.02      # fallback spread (price units) if market lacks one
+    WEATHER_FEE_RATE: float = 0.0             # platform trading fee as a fraction of notional
+                                              # (Polymarket ~0; set for Kalshi when enabled)
 
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the
