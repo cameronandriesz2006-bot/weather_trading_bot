@@ -32,8 +32,8 @@ serves a React dashboard.
 | 1 | **Cut crypto cleanly** — extracted `calculate_edge`/`calculate_kelly_size` to `backend/core/sizing.py`; deleted `signals.py`/`crypto.py`/`btc_markets.py`/`markets.py`; removed BTC scan job; BTC endpoints now empty stubs; dropped BTC-only config | **done** |
 | 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **done** |
 | 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess) | **done** (Polymarket; Kalshi structured-fields part deferred until Kalshi is enabled) |
-| 4 | Honest probability — fitted+widened distribution, lead-time uncertainty, bias correction, climatology blend | **next** |
-| 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | |
+| 4 | Honest probability — fitted+widened distribution + lead-time uncertainty **done**; bias correction & climatology **deferred** (need run-time forecast-vs-actual history; markets are 0–1 day out so climatology barely matters) | core **done** |
+| 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | **next** |
 | 6 | Real costs — subtract fees+spread before edge check and in P&L; add fee field; re-tune sizing; weather daily-loss stop | |
 | 7 | Run weeks in simulation; decision point: does it beat the price net of fees? | |
 | 7+ | Profitability levers (selectivity, intraday, threshold tuning, exit logic, more cities) | |
@@ -80,9 +80,16 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
    `timezone=auto`, so the daily high/low is aggregated over the station's local calendar day
    (the day markets settle on) rather than a UTC day.
 
-5. **Overconfident forecast (Phase 4).** Probability = raw fraction of ensemble members
-   past the threshold; `mean`/`std` are computed in `EnsembleForecast` then thrown away.
-   Use a fitted, sensibly widened distribution instead of raw member-counting.
+5. **Overconfident forecast (Phase 4) — core FIXED.** Bucket probability now comes from a
+   fitted Normal over the ensemble mean/spread, integrated across the bucket's rounding
+   interval (`EnsembleForecast._fitted_bucket_prob` / `probability_high|low_in_range`). The
+   spread is **widened** (`sigma_eff = max(sigma*INFLATION, FLOOR) + lead_days*PER_LEAD_DAY`,
+   config knobs `WEATHER_SIGMA_*`) because the GFS ensemble is under-dispersed. Effect: live
+   median |edge| fell to ~1% and max from ~95% → ~36%; a unanimous ensemble no longer implies
+   100%. Tests: `tests/test_forecast_distribution.py`. **Still deferred:** per-station bias
+   correction and climatology blend — both need forecast-vs-actual history the sim will only
+   produce by running, and at 0–1 day lead climatology adds little. `_fraction_in_range` is
+   kept as a raw reference but is no longer the traded probability.
 
 6. **No fees anywhere (Phase 6).** Edge threshold and simulated P&L ignore fees and
    spread; there is no fee field on the trade record.

@@ -1,6 +1,7 @@
 """Weather data fetcher using Open-Meteo Ensemble API and NWS observations."""
 import httpx
 import logging
+import math
 from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
 from typing import Dict, List, Optional
@@ -102,11 +103,12 @@ class EnsembleForecast:
     @staticmethod
     def _fraction_in_range(members: List[float], low_f: Optional[float], high_f: Optional[float]) -> float:
         """
-        Fraction of members whose value rounds into the integer bucket [low_f, high_f].
+        Raw fraction of members whose value rounds into the integer bucket [low_f, high_f].
 
         Settlement rounds the observed temperature to the nearest degree before
         bucketing, so a bucket "82-83" covers raw values in [81.5, 83.5). Open
-        bounds (None) extend the range to -/+ infinity.
+        bounds (None) extend the range to -/+ infinity. Kept as a reference; the
+        traded probability uses the fitted distribution below.
         """
         if not members:
             return 0.5
@@ -115,13 +117,50 @@ class EnsembleForecast:
         count = sum(1 for m in members if lo <= m < hi)
         return count / len(members)
 
+    @staticmethod
+    def _normal_cdf(x: float, mean: float, sigma: float) -> float:
+        """Standard Normal CDF at x for N(mean, sigma)."""
+        if sigma <= 0:
+            return 1.0 if x >= mean else 0.0
+        return 0.5 * (1.0 + math.erf((x - mean) / (sigma * math.sqrt(2.0))))
+
+    def _effective_sigma(self, raw_sigma: float) -> float:
+        """
+        Widen the (under-dispersed) ensemble spread into an honest forecast sigma.
+
+        sigma_eff = max(raw_sigma * INFLATION, FLOOR) + lead_days * PER_LEAD_DAY
+        """
+        from backend.config import settings
+        base = max(raw_sigma * settings.WEATHER_SIGMA_INFLATION, settings.WEATHER_SIGMA_FLOOR_F)
+        lead_days = max(0, (self.target_date - date.today()).days)
+        return base + lead_days * settings.WEATHER_SIGMA_PER_LEAD_DAY_F
+
+    def _fitted_bucket_prob(self, mean: float, raw_sigma: float,
+                            low_f: Optional[float], high_f: Optional[float]) -> float:
+        """
+        P(temperature in bucket) under a fitted, widened Normal.
+
+        Integrates N(mean, sigma_eff) over the bucket's rounding interval
+        [low-0.5, high+0.5); open bounds extend to -/+ infinity.
+        """
+        sigma = self._effective_sigma(raw_sigma)
+        lo = (low_f - 0.5) if low_f is not None else None
+        hi = (high_f + 0.5) if high_f is not None else None
+        p_lo = self._normal_cdf(lo, mean, sigma) if lo is not None else 0.0
+        p_hi = self._normal_cdf(hi, mean, sigma) if hi is not None else 1.0
+        return max(0.0, p_hi - p_lo)
+
     def probability_high_in_range(self, low_f: Optional[float], high_f: Optional[float]) -> float:
-        """Fraction of ensemble members whose daily HIGH falls in the bucket."""
-        return self._fraction_in_range(self.member_highs, low_f, high_f)
+        """Probability the daily HIGH falls in the bucket (fitted, widened Normal)."""
+        if not self.member_highs:
+            return 0.5
+        return self._fitted_bucket_prob(self.mean_high, self.std_high, low_f, high_f)
 
     def probability_low_in_range(self, low_f: Optional[float], high_f: Optional[float]) -> float:
-        """Fraction of ensemble members whose daily LOW falls in the bucket."""
-        return self._fraction_in_range(self.member_lows, low_f, high_f)
+        """Probability the daily LOW falls in the bucket (fitted, widened Normal)."""
+        if not self.member_lows:
+            return 0.5
+        return self._fitted_bucket_prob(self.mean_low, self.std_low, low_f, high_f)
 
     @property
     def ensemble_agreement(self) -> float:

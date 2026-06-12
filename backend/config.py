@@ -1,4 +1,4 @@
-"""Configuration settings for the BTC 5-min trading bot."""
+"""Configuration settings for the weather trading bot."""
 import os
 from pydantic_settings import BaseSettings
 from typing import Optional
@@ -49,6 +49,14 @@ class Settings(BaseSettings):
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
     WEATHER_MAX_TRADE_SIZE: float = 100.0
     WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver"
+
+    # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
+    # probability. We fit a Normal to the ensemble mean/spread and WIDEN the
+    # spread, because the GFS ensemble is under-dispersed (too confident).
+    #   sigma_eff = max(sigma_ensemble * INFLATION, FLOOR_F) + lead_days * PER_LEAD_DAY_F
+    WEATHER_SIGMA_INFLATION: float = 1.3      # blow up the (too-narrow) ensemble spread
+    WEATHER_SIGMA_FLOOR_F: float = 2.0        # irreducible uncertainty (deg F), even if unanimous
+    WEATHER_SIGMA_PER_LEAD_DAY_F: float = 0.7  # extra uncertainty per day of lead time
 
     class Config:
         env_file = ".env"
