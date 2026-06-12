@@ -30,8 +30,8 @@ serves a React dashboard.
 |---|---|---|
 | 0 | Run unchanged in simulation; commit known-good baseline | done (repo runs) |
 | 1 | **Cut crypto cleanly** — extracted `calculate_edge`/`calculate_kelly_size` to `backend/core/sizing.py`; deleted `signals.py`/`crypto.py`/`btc_markets.py`/`markets.py`; removed BTC scan job; BTC endpoints now empty stubs; dropped BTC-only config | **done** |
-| 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **next** |
-| 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess, Kalshi structured fields) | |
+| 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **done** |
+| 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess, Kalshi structured fields) | **next** |
 | 4 | Honest probability — fitted+widened distribution, lead-time uncertainty, bias correction, climatology blend | |
 | 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | |
 | 6 | Real costs — subtract fees+spread before edge check and in P&L; add fee field; re-tune sizing; weather daily-loss stop | |
@@ -44,16 +44,18 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
 
 ## Key bugs / known issues
 
-1. **Scoreboard label mismatch (LINCHPIN, Phase 2).** Weather signals store
-   `direction = "yes"/"no"` (`backend/core/weather_signals.py:80`, persisted `:226`).
-   Settlement sets `actual_outcome = "up"/"down"` and grades
-   `outcome_correct = (signal.direction == actual_outcome)`
-   (`backend/core/settlement.py:276-278`). `"yes" == "up"` is always False, so **every
-   weather prediction is marked wrong**. This breaks calibration accuracy and the
-   prediction-vs-reality curve. (Brier score still works — it uses the numeric
-   `model_probability` vs `settlement_value`, not the labels.) `calculate_pnl` is *not*
-   affected — it maps up→yes/down→no and handles yes/no directly. Fix: normalize direction
-   to one convention everywhere, or translate at the settlement step.
+1. **Scoreboard label mismatch (LINCHPIN, Phase 2) — FIXED.** Weather signals store
+   `direction = "yes"/"no"`; settlement used to build `actual_outcome = "up"/"down"` and
+   grade `outcome_correct = (signal.direction == actual_outcome)`, so `"yes" == "up"` was
+   always False and **every weather prediction graded wrong**. Fixed by translating at the
+   settlement step: `grade_signal_outcome(direction, settlement_value)` in
+   `backend/core/settlement.py` is vocabulary-agnostic ("yes"/"up" = first outcome,
+   "no"/"down" = second) and returns `(actual_outcome, outcome_correct)` in the signal's own
+   vocab. Regression test: `tests/test_settlement_grading.py` (run with repo root on
+   `PYTHONPATH`; pytest not installed, file is also runnable as a script). Brier score was
+   always correct (numeric `model_probability` vs `settlement_value`); `calculate_pnl` was
+   never affected. Note: at fix time the DB held only legacy BTC data and zero weather
+   signals, so no retroactive re-grading was needed.
 
 2. **Polymarket weather fetch finds 0 markets (Phase 3, market-reading).**
    `backend/data/weather_markets.py` queries Gamma with invalid params `tag=Weather` and

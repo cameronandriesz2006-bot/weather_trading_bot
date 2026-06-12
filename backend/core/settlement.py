@@ -151,6 +151,34 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     return round(pnl, 2)
 
 
+def grade_signal_outcome(direction: str, settlement_value: float) -> Tuple[str, bool]:
+    """
+    Grade a signal's predicted direction against the settled outcome.
+
+    Vocabulary-agnostic: weather signals store direction as "yes"/"no", while
+    legacy BTC signals used "up"/"down". Both name the SAME two sides —
+    "yes"/"up" = the first outcome, "no"/"down" = the second.
+
+    settlement_value is the ground truth: 1.0 = first outcome won (YES/UP),
+    0.0 = second outcome won (NO/DOWN).
+
+    Returns (actual_outcome, outcome_correct), where actual_outcome is expressed
+    in the SAME vocabulary as `direction` so the recorded value stays consistent.
+
+    Note: this previously compared direction ("yes"/"no") directly against an
+    actual_outcome built as "up"/"down", so every weather signal graded as wrong.
+    """
+    actual_first = settlement_value == 1.0
+    predicted_first = direction in ("yes", "up")
+
+    if direction in ("yes", "no"):
+        actual_outcome = "yes" if actual_first else "no"
+    else:
+        actual_outcome = "up" if actual_first else "down"
+
+    return actual_outcome, (predicted_first == actual_first)
+
+
 async def check_market_settlement(trade: Trade) -> Tuple[bool, Optional[float], Optional[float]]:
     """
     Check if a trade's market has settled.
@@ -273,9 +301,11 @@ async def settle_pending_trades(db: Session) -> List[Trade]:
                 if trade.signal_id:
                     linked_signal = db.query(Signal).filter(Signal.id == trade.signal_id).first()
                     if linked_signal:
-                        actual_outcome = "up" if settlement_value == 1.0 else "down"
+                        actual_outcome, outcome_correct = grade_signal_outcome(
+                            linked_signal.direction, settlement_value
+                        )
                         linked_signal.actual_outcome = actual_outcome
-                        linked_signal.outcome_correct = (linked_signal.direction == actual_outcome)
+                        linked_signal.outcome_correct = outcome_correct
                         linked_signal.settlement_value = settlement_value
                         linked_signal.settled_at = datetime.utcnow()
         except Exception as e:

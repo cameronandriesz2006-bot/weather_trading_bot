@@ -95,7 +95,7 @@ class Signal(Base):
     executed = Column(Boolean, default=False)
 
     # Calibration tracking — filled after settlement
-    actual_outcome = Column(String, nullable=True)    # "up" or "down" — actual market result
+    actual_outcome = Column(String, nullable=True)    # actual result in the signal's vocab ("yes"/"no" weather, "up"/"down" legacy)
     outcome_correct = Column(Boolean, nullable=True)   # did our direction prediction match?
     settlement_value = Column(Float, nullable=True)     # 1.0=UP won, 0.0=DOWN won
     settled_at = Column(DateTime, nullable=True)        # when we recorded the outcome
