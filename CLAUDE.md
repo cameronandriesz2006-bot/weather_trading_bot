@@ -57,23 +57,26 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
    never affected. Note: at fix time the DB held only legacy BTC data and zero weather
    signals, so no retroactive re-grading was needed.
 
-2. **Polymarket weather fetch finds 0 markets (Phase 3, market-reading).**
-   `backend/data/weather_markets.py` queries Gamma with invalid params `tag=Weather` and
-   `slug_contains=...`, which the API silently ignores → it returns a default feed of
-   unrelated events and parses 0 temperature markets. The correct param is
-   **`tag_slug=weather`**, which returns ~57 live daily-temperature events (NYC, Chicago,
-   Miami, Denver, etc.). These are **bucketed range markets** ("87°F or below",
-   "between 88-89°F", "106°F or higher"), not simple above/below binaries — the parser
-   must handle ranges and skip what it can't read cleanly. Also: `"low" in title` matches
-   the substring in "be**low**", misclassifying "or below" markets as low-temp markets;
-   and the past-date filter rejects same-day markets dated "yesterday" in UTC.
+2. **Polymarket weather fetch finds 0 markets (Phase 3, market-reading) — FIXED.**
+   `weather_markets.py` was rebuilt: it now queries Gamma with `tag_slug=daily-temperature`
+   (the old `tag`/`slug_contains` params were silently ignored → 0 markets), paginates past
+   the 100-event page cap, derives city/metric/date from the **event slug** (robust, explicit
+   year), parses each bucket's `groupItemTitle` into a numeric range, and **skips** anything it
+   can't read cleanly. Markets are modelled as range buckets (`low_f`/`high_f`, open-ended tails)
+   and scored by `EnsembleForecast.probability_high/low_in_range` (rounding-aware: bucket [82,83]
+   = raw [81.5,83.5)). `WeatherMarket.threshold_f`/`direction` are compat properties so the API
+   /frontend contract is unchanged. Verified: 85 markets / 85 signals via the live API.
 
-3. **Wrong location/station (Phase 3).** `CITY_CONFIG` (`backend/data/weather.py`) uses
-   one station per city, but Kalshi and Polymarket may settle on *different* stations.
-   Point each city's forecast at the exact station the bet settles on, per platform.
+3. **Wrong location/station (Phase 3) — IN PROGRESS.** `CITY_CONFIG` (`backend/data/weather.py`)
+   forecasts the wrong spot for some cities. Polymarket settlement stations (from market
+   descriptions): NYC = **LaGuardia (KLGA)** not Central Park (KNYC); Denver = **Buckley SFB
+   (KBKF)** not Denver Intl (KDEN); Chicago=KORD, Miami=KMIA, LA=KLAX already correct. Point each
+   city's forecast lat/lon at the settlement station. NWS observed-temp is unused for Polymarket
+   settlement (Polymarket resolves from its own market outcome), so station only affects the
+   forecast. Kalshi may use *different* stations — verify separately when Kalshi is enabled.
 
-4. **UTC vs local day (Phase 3).** Open-Meteo daily max/min is computed over a UTC day,
-   not the market's local day. One setting on the forecast request.
+4. **UTC vs local day (Phase 3) — TODO.** Open-Meteo daily max/min is computed over a UTC day,
+   not the market's local day. Add `timezone` to the forecast request.
 
 5. **Overconfident forecast (Phase 4).** Probability = raw fraction of ensemble members
    past the threshold; `mean`/`std` are computed in `EnsembleForecast` then thrown away.

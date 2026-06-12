@@ -58,20 +58,16 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     if not forecast or not forecast.member_highs:
         return None
 
-    # Calculate model probability based on market's question
+    # Model YES probability = fraction of ensemble members whose daily high/low
+    # lands in this market's temperature bucket.
     if market.metric == "high":
-        if market.direction == "above":
-            model_yes_prob = forecast.probability_high_above(market.threshold_f)
-        else:
-            model_yes_prob = forecast.probability_high_below(market.threshold_f)
-    else:  # "low"
-        if market.direction == "above":
-            model_yes_prob = forecast.probability_low_above(market.threshold_f)
-        else:
-            model_yes_prob = forecast.probability_low_below(market.threshold_f)
+        model_yes_prob = forecast.probability_high_in_range(market.low_f, market.high_f)
+    else:
+        model_yes_prob = forecast.probability_low_in_range(market.low_f, market.high_f)
 
-    # Clip extreme probabilities (ensemble can be unanimous but don't bet 100%)
-    model_yes_prob = max(0.05, min(0.95, model_yes_prob))
+    # Light clip only to keep Kelly's odds math finite; do NOT inflate genuinely
+    # tiny bucket probabilities (that would manufacture fake edges on dead buckets).
+    model_yes_prob = max(0.01, min(0.99, model_yes_prob))
 
     market_yes_prob = market.yes_price
 
@@ -84,15 +80,8 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
         edge = 0.0  # Zero out but still return for UI visibility
 
-    # Confidence = ensemble agreement (how one-sided the members are)
-    if market.metric == "high":
-        members = forecast.member_highs
-    else:
-        members = forecast.member_lows
-
-    above_count = sum(1 for m in members if m > market.threshold_f)
-    agreement_frac = max(above_count, len(members) - above_count) / len(members)
-    confidence = min(0.9, agreement_frac)
+    # Confidence = how sharply the ensemble is concentrated (one-sided around median).
+    confidence = min(0.9, forecast.ensemble_agreement)
 
     # Kelly sizing
     bankroll = settings.INITIAL_BANKROLL
@@ -118,11 +107,10 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
 
     reasoning = (
         f"[{filter_status}]{filter_note} "
-        f"{market.city_name} {market.metric} {market.direction} {market.threshold_f:.0f}F on {market.target_date} | "
+        f"{market.city_name} {market.metric} {market.bucket_label} on {market.target_date} | "
         f"Ensemble: {mean_val:.1f}F +/- {std_val:.1f}F ({forecast.num_members} members) | "
         f"Model YES: {model_yes_prob:.0%} vs Market: {market_yes_prob:.0%} | "
-        f"Edge: {edge:+.1%} -> {direction.upper()} @ {entry_price:.0%} | "
-        f"Agreement: {agreement_frac:.0%}"
+        f"Edge: {edge:+.1%} -> {direction.upper()} @ {entry_price:.0%}"
     )
 
     return WeatherTradingSignal(

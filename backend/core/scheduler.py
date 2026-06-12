@@ -153,7 +153,7 @@ async def weather_scan_and_trade_job():
                 log_event("trade",
                     f"WX {signal.market.city_name}: {signal.direction.upper()} "
                     f"${trade_size:.0f} @ {entry_price:.0%} | "
-                    f"{signal.market.metric} {signal.market.direction} {signal.market.threshold_f:.0f}F",
+                    f"{signal.market.metric} {signal.market.bucket_label}",
                     {
                         "slug": signal.market.slug,
                         "direction": signal.direction,

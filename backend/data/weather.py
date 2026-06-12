@@ -100,6 +100,30 @@ class EnsembleForecast:
         """Fraction of ensemble members with daily low below threshold."""
         return 1.0 - self.probability_low_above(threshold_f)
 
+    @staticmethod
+    def _fraction_in_range(members: List[float], low_f: Optional[float], high_f: Optional[float]) -> float:
+        """
+        Fraction of members whose value rounds into the integer bucket [low_f, high_f].
+
+        Settlement rounds the observed temperature to the nearest degree before
+        bucketing, so a bucket "82-83" covers raw values in [81.5, 83.5). Open
+        bounds (None) extend the range to -/+ infinity.
+        """
+        if not members:
+            return 0.5
+        lo = (low_f - 0.5) if low_f is not None else float("-inf")
+        hi = (high_f + 0.5) if high_f is not None else float("inf")
+        count = sum(1 for m in members if lo <= m < hi)
+        return count / len(members)
+
+    def probability_high_in_range(self, low_f: Optional[float], high_f: Optional[float]) -> float:
+        """Fraction of ensemble members whose daily HIGH falls in the bucket."""
+        return self._fraction_in_range(self.member_highs, low_f, high_f)
+
+    def probability_low_in_range(self, low_f: Optional[float], high_f: Optional[float]) -> float:
+        """Fraction of ensemble members whose daily LOW falls in the bucket."""
+        return self._fraction_in_range(self.member_lows, low_f, high_f)
+
     @property
     def ensemble_agreement(self) -> float:
         """How one-sided the ensemble is (0.5 = split, 1.0 = unanimous)."""
