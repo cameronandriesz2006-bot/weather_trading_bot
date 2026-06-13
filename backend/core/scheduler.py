@@ -86,16 +86,18 @@ async def weather_scan_and_trade_job():
 
             MAX_TRADES_PER_SCAN = 3
             MIN_TRADE_SIZE = 10
-            MAX_WEATHER_ALLOCATION = 500.0  # Max total exposure to weather markets
+            max_allocation = settings.WEATHER_MAX_ALLOCATION  # max open weather exposure
 
-            # Check weather allocation limit
+            # Track remaining room under the allocation cap; we enforce it per
+            # trade below so total open exposure never overshoots the cap.
             weather_pending = db.query(func.coalesce(func.sum(Trade.size), 0.0)).filter(
                 Trade.settled == False,
                 Trade.market_type == "weather",
             ).scalar()
+            remaining_allocation = max_allocation - weather_pending
 
-            if weather_pending >= MAX_WEATHER_ALLOCATION:
-                log_event("info", f"Weather allocation limit reached: ${weather_pending:.0f}/${MAX_WEATHER_ALLOCATION:.0f}")
+            if remaining_allocation < MIN_TRADE_SIZE:
+                log_event("info", f"Weather allocation full: ${weather_pending:.0f}/${max_allocation:.0f}")
                 return
 
             # --- Daily loss circuit breaker (Phase 6: now guards weather too) ---
@@ -123,6 +125,14 @@ async def weather_scan_and_trade_job():
 
                 trade_size = min(signal.suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
                 trade_size = max(trade_size, MIN_TRADE_SIZE)
+
+                # Hard allocation ceiling: never let open weather exposure exceed
+                # the cap. Trim to the remaining room; stop if there's no room left.
+                if remaining_allocation < MIN_TRADE_SIZE:
+                    log_event("info", f"Weather allocation full: ${max_allocation - remaining_allocation:.0f}/${max_allocation:.0f}")
+                    break
+                if trade_size > remaining_allocation:
+                    trade_size = remaining_allocation
 
                 if state.bankroll < MIN_TRADE_SIZE:
                     log_event("warning", f"Bankroll too low: ${state.bankroll:.2f}")
@@ -164,6 +174,7 @@ async def weather_scan_and_trade_job():
 
                 state.total_trades += 1
                 trades_executed += 1
+                remaining_allocation -= trade_size
 
                 log_event("trade",
                     f"WX {signal.market.city_name}: {signal.direction.upper()} "

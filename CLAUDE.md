@@ -103,13 +103,39 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
    correctly filtered (e.g. a +30% gross edge can drop below 8% net). Tests:
    `tests/test_weather_signal_costs.py`.
 
+7. **Liquidity/slippage + sizing realism (Phase 7+, Layer 1) — FIXED.** The reader now
+   captures `liquidity` (Gamma `liquidityNum`) and live `best_bid`/`best_ask`; signals enter
+   at the **real ask** when the book is present. Two new gates in `passes_threshold` reject
+   mirage edges: a minimum liquidity (`WEATHER_MIN_LIQUIDITY`, $500) and a maximum **relative**
+   spread (`WEATHER_MAX_REL_SPREAD`, 10% — a 2¢ spread on a 4¢ contract is a 50% mirage even
+   though 2¢ "looks" tiny). Trade size is capped to a fraction of the book
+   (`WEATHER_MAX_BOOK_FRACTION`, 10%) so we don't pretend to fill $75 into a $200 market. Live
+   check: actionable fell from ~22 to ~8–10; the large edges that survive are on liquid,
+   tight-spread markets (→ that's forecast **bias**, the next lever, not liquidity). Tests
+   extended in `tests/test_weather_signal_costs.py`. **Still deferred:** size-dependent
+   slippage baked into the fill price (Layer 2(ii)) and real order-book walking (Layer 3).
+8. **Kelly sized off a constant bankroll — FIXED.** `generate_weather_signal` now takes the
+   **live** bankroll (read from `BotState` in `scan_for_weather_signals`, fallback
+   `INITIAL_BANKROLL`), so bets shrink after losses instead of always sizing off $10k.
+9. **Allocation cap hard-coded & overshooting — FIXED.** Moved to `config.WEATHER_MAX_ALLOCATION`
+   ($500) and enforced as a **hard per-trade ceiling** (trim to remaining room; stop when
+   <`MIN_TRADE_SIZE`), so open weather exposure no longer blows past to ~$600.
+10. **Cost-aware economics now persisted — DONE.** `Signal` gained `net_edge`, `entry_price`,
+   `cost`, `rel_spread`, `liquidity` (migrated in `ensure_schema`), so the scoreboard can prove
+   an edge NET of cost and the dashboard (Q8) has the fields it needs.
+
 ### Minor cleanup (catch along the way)
+- `database.py ensure_schema()` swallows schema-migration errors silently — make it log
+  loudly (matters when adding the fee column in Phase 6). **(done)**
 - `database.py ensure_schema()` swallows schema-migration errors silently — make it log
   loudly (matters when adding the fee column in Phase 6).
 - Date parser assumes current year when a title omits it — wrong-year risk near New Year.
 - Weather exposure cap ($500) is hard-coded in the scheduler, not in config — move it.
-- Dead weight: unused observed-temp function, unused `ScanLog` table, an uncalled
-  Groq/AI hook in the weather path, a configured-but-unscheduled weather-settlement timer.
+  **(done — now `config.WEATHER_MAX_ALLOCATION`, enforced per-trade)**
+- Dead weight: unused `ScanLog` table, an uncalled Groq/AI hook in the weather path, a
+  configured-but-unscheduled weather-settlement timer. NOTE: the "unused observed-temp
+  function" (`fetch_nws_observed_temperature`) is NOT dead weight — keep it; it's the
+  data source for the deferred per-station **bias correction** (forecast vs. actual).
 - Verify the Kalshi base URL in `kalshi_client.py` is current (lower priority; Kalshi is
   region-blocked).
 

@@ -61,6 +61,24 @@ class Settings(BaseSettings):
     WEATHER_FEE_RATE: float = 0.0             # platform trading fee as a fraction of notional
                                               # (Polymarket ~0; set for Kalshi when enabled)
 
+    # Liquidity / slippage guard (Layer 1 + size cap). Thin, wide-spread weather
+    # buckets produce mirage edges (a 30% "edge" on a 4c market whose spread is 2c
+    # is not real). These gate such buckets out and cap our size to the book.
+    #   - MIN_LIQUIDITY: skip buckets with less than this much resting liquidity ($)
+    #   - MAX_REL_SPREAD: skip if the spread is a large fraction of the side's price
+    #     (e.g. a 1.7c spread on a 4c contract = 0.42 -> mirage), even if absolute
+    #     spread looks tiny
+    #   - MAX_BOOK_FRACTION: never simulate taking more than this fraction of the
+    #     book (so we don't pretend to fill $75 into a $200 market)
+    WEATHER_MIN_LIQUIDITY: float = 500.0
+    WEATHER_MAX_REL_SPREAD: float = 0.10
+    WEATHER_MAX_BOOK_FRACTION: float = 0.10
+
+    # Max total exposure to OPEN (unsettled) weather positions at once. Enforced
+    # as a hard ceiling per trade so it never overshoots (was a hard-coded $500 in
+    # the scheduler, checked only once per scan -> it could blow past to ~$600).
+    WEATHER_MAX_ALLOCATION: float = 500.0
+
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the
     # spread, because the GFS ensemble is under-dispersed (too confident).

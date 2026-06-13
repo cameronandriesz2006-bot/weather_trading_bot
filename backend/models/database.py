@@ -90,6 +90,15 @@ class Signal(Base):
     edge = Column(Float)
     confidence = Column(Float)
 
+    # Cost-aware economics (Phase 6 + Layer 1) — recorded so the scoreboard can
+    # prove an edge NET of costs, and so the dashboard can show why a bucket was
+    # or wasn't traded. Nullable: legacy/BTC signals won't have them.
+    net_edge = Column(Float, nullable=True)      # gross edge minus spread/2 + fee
+    entry_price = Column(Float, nullable=True)   # effective price we'd pay (real ask)
+    cost = Column(Float, nullable=True)          # per-share cost (spread/2 + fee)
+    rel_spread = Column(Float, nullable=True)    # spread as a fraction of side price
+    liquidity = Column(Float, nullable=True)     # $ resting in the book at scan time
+
     kelly_fraction = Column(Float)
     suggested_size = Column(Float)
 
@@ -197,6 +206,11 @@ def ensure_schema():
                 ("settlement_value", "FLOAT"),
                 ("settled_at", "DATETIME"),
                 ("market_type", "VARCHAR DEFAULT 'btc'"),
+                ("net_edge", "FLOAT"),
+                ("entry_price", "FLOAT"),
+                ("cost", "FLOAT"),
+                ("rel_spread", "FLOAT"),
+                ("liquidity", "FLOAT"),
             ]:
                 if col not in signal_columns:
                     try:

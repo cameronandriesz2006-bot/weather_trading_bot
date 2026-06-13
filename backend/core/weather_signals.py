@@ -26,8 +26,9 @@ class WeatherTradingSignal:
 
     # Cost-adjusted economics (Phase 6)
     net_edge: float = 0.0            # gross edge minus trading costs (spread + fee)
-    entry_price: float = 0.0         # effective entry (ask = mid + spread/2)
+    entry_price: float = 0.0         # effective entry (real ask, or mid + spread/2)
     cost: float = 0.0                # per-share cost in price units (spread/2 + fee)
+    rel_spread: float = 1.0          # spread as a fraction of the side's price (Layer 1)
 
     # Confidence and sizing
     confidence: float = 0.5
@@ -46,15 +47,20 @@ class WeatherTradingSignal:
 
     @property
     def passes_threshold(self) -> bool:
-        """Actionable only if the edge clears the threshold AFTER costs and the
-        effective entry price is within the cap."""
+        """Actionable only if, after costs, the edge clears the threshold, the
+        effective entry price is within the cap, AND the market is liquid enough
+        with a tight-enough relative spread to actually trade (Layer 1)."""
         return (
             self.net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
             and 0 < self.entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
+            and self.market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
+            and self.rel_spread <= settings.WEATHER_MAX_REL_SPREAD
         )
 
 
-async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTradingSignal]:
+async def generate_weather_signal(
+    market: WeatherMarket, bankroll: Optional[float] = None
+) -> Optional[WeatherTradingSignal]:
     """
     Generate a trading signal for a weather temperature market.
 
@@ -62,6 +68,9 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     - Count fraction of ensemble members above/below the threshold
     - Compare to market price to find edge
     - Size using Kelly criterion
+
+    Kelly is sized off the LIVE bankroll passed in (so bets shrink as the
+    bankroll falls); it falls back to INITIAL_BANKROLL only if not provided.
     """
     forecast = await fetch_ensemble_forecast(market.city_key, market.target_date)
     if not forecast or not forecast.member_highs:
@@ -84,15 +93,30 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     edge, direction_raw = calculate_edge(model_yes_prob, market_yes_prob)
     direction = "yes" if direction_raw == "up" else "no"
 
-    # --- Trading costs (Phase 6) ---
-    # The dominant cost on Polymarket is crossing the bid/ask spread: we enter
-    # at the ask (mid + spread/2). Fees are added on top if configured.
-    spread_used = market.spread if market.spread and market.spread > 0 else settings.WEATHER_DEFAULT_SPREAD
+    # --- Trading costs (Phase 6 + Layer 1) ---
+    # The dominant cost on Polymarket is crossing the bid/ask spread. Prefer the
+    # live best bid/ask when both are present and sane (then we enter at the real
+    # ask); otherwise fall back to the reported spread around the side mid.
+    side_mid = market.yes_price if direction == "yes" else market.no_price
+
+    bid, ask = market.best_bid, market.best_ask
+    if direction == "no" and bid is not None and ask is not None:
+        # The NO book is the mirror of the YES book: ask_no = 1 - bid_yes, etc.
+        bid, ask = (1.0 - market.best_ask), (1.0 - market.best_bid)
+
+    if bid is not None and ask is not None and 0.0 < bid < ask < 1.0:
+        spread_used = ask - bid
+        entry_price = min(0.999, ask)              # the real ask we'd pay
+    else:
+        spread_used = market.spread if market.spread and market.spread > 0 else settings.WEATHER_DEFAULT_SPREAD
+        entry_price = min(0.999, side_mid + spread_used / 2.0)
+
     half_spread = spread_used / 2.0
     cost = half_spread + settings.WEATHER_FEE_RATE
 
-    side_mid = market.yes_price if direction == "yes" else market.no_price
-    entry_price = min(0.999, side_mid + half_spread)   # effective ask we'd pay
+    # Spread as a fraction of the side's price: a 2c spread on a 4c contract is a
+    # 50% mirage even though 2c "looks" tiny. Gated in passes_threshold.
+    rel_spread = spread_used / side_mid if side_mid > 0 else 1.0
 
     # Edge after costs — this is what we actually gate and size on.
     net_edge = edge - cost
@@ -101,8 +125,10 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     confidence = min(0.9, forecast.ensemble_agreement)
 
     # Kelly sizing on the COST-ADJUSTED economics: pass the effective entry price
-    # for the chosen side so the spread is baked into the odds.
-    bankroll = settings.INITIAL_BANKROLL
+    # for the chosen side so the spread is baked into the odds. Size off the LIVE
+    # bankroll so bets scale down after losses.
+    if bankroll is None or bankroll <= 0:
+        bankroll = settings.INITIAL_BANKROLL
     kelly_market_price = entry_price if direction == "yes" else (1.0 - entry_price)
     if net_edge > 0:
         suggested_size = calculate_kelly_size(
@@ -113,6 +139,10 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
             bankroll=bankroll,
         )
         suggested_size = min(suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
+        # Layer 2(i): never simulate taking more than a small slice of the book,
+        # so we don't pretend to fill $75 into a $200 market.
+        if market.liquidity and market.liquidity > 0:
+            suggested_size = min(suggested_size, settings.WEATHER_MAX_BOOK_FRACTION * market.liquidity)
     else:
         suggested_size = 0.0
 
@@ -120,14 +150,21 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     mean_val = forecast.mean_high if market.metric == "high" else forecast.mean_low
     std_val = forecast.std_high if market.metric == "high" else forecast.std_low
 
-    # Build reasoning
+    # Build reasoning — mirror passes_threshold exactly so the recorded note
+    # explains precisely why a bucket was or wasn't actionable.
     actionable = (net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
-                  and 0 < entry_price <= settings.WEATHER_MAX_ENTRY_PRICE)
+                  and 0 < entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
+                  and market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
+                  and rel_spread <= settings.WEATHER_MAX_REL_SPREAD)
     filter_notes = []
     if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
         filter_notes.append(f"entry {entry_price:.0%} > {settings.WEATHER_MAX_ENTRY_PRICE:.0%}")
     if net_edge < settings.WEATHER_MIN_EDGE_THRESHOLD:
         filter_notes.append(f"net edge {net_edge:.1%} < {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}")
+    if market.liquidity < settings.WEATHER_MIN_LIQUIDITY:
+        filter_notes.append(f"liq ${market.liquidity:.0f} < ${settings.WEATHER_MIN_LIQUIDITY:.0f}")
+    if rel_spread > settings.WEATHER_MAX_REL_SPREAD:
+        filter_notes.append(f"rel-spread {rel_spread:.0%} > {settings.WEATHER_MAX_REL_SPREAD:.0%}")
     filter_note = f" [{', '.join(filter_notes)}]" if filter_notes else ""
 
     reasoning = (
@@ -147,6 +184,7 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
         net_edge=net_edge,
         entry_price=entry_price,
         cost=cost,
+        rel_spread=rel_spread,
         confidence=confidence,
         kelly_fraction=suggested_size / bankroll if bankroll > 0 else 0,
         suggested_size=suggested_size,
@@ -158,12 +196,28 @@ async def generate_weather_signal(market: WeatherMarket) -> Optional[WeatherTrad
     )
 
 
+def _current_bankroll() -> float:
+    """Live bankroll from BotState, falling back to the configured starting value."""
+    db = SessionLocal()
+    try:
+        from backend.models.database import BotState
+        state = db.query(BotState).first()
+        if state and state.bankroll and state.bankroll > 0:
+            return float(state.bankroll)
+    except Exception as e:
+        logger.debug(f"Could not read live bankroll, using initial: {e}")
+    finally:
+        db.close()
+    return settings.INITIAL_BANKROLL
+
+
 async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     """
     Scan weather markets and generate ensemble-based signals.
     """
     signals = []
 
+    bankroll = _current_bankroll()
     city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
 
     logger.info("=" * 50)
@@ -195,7 +249,7 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
 
     for market in markets:
         try:
-            signal = await generate_weather_signal(market)
+            signal = await generate_weather_signal(market, bankroll=bankroll)
             if signal:
                 signals.append(signal)
         except Exception as e:
@@ -244,6 +298,11 @@ def _persist_weather_signals(signals: list):
                 market_price=signal.market_probability,
                 edge=signal.edge,
                 confidence=signal.confidence,
+                net_edge=signal.net_edge,
+                entry_price=signal.entry_price,
+                cost=signal.cost,
+                rel_spread=signal.rel_spread,
+                liquidity=signal.market.liquidity,
                 kelly_fraction=signal.kelly_fraction,
                 suggested_size=signal.suggested_size,
                 sources=signal.sources,

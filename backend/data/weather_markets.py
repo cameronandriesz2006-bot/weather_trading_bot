@@ -70,6 +70,9 @@ class WeatherMarket:
     no_price: float           # Price of NO outcome (0-1), ~mid
     spread: float = 0.0       # live bid/ask spread in price units (cost to cross)
     volume: float = 0.0
+    liquidity: float = 0.0    # $ resting in the book (Gamma liquidityNum) — depth proxy
+    best_bid: Optional[float] = None   # live best bid for YES (None if absent)
+    best_ask: Optional[float] = None   # live best ask for YES (None if absent)
     closed: bool = False
 
     @property
@@ -150,6 +153,16 @@ def parse_event_slug(slug: str) -> Optional[Tuple[str, str, date]]:
     return city_key, metric, target_date
 
 
+def _to_float(value, default):
+    """Best-effort float conversion; returns ``default`` on None/empty/garbage."""
+    if value is None or value == "":
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
+
 def _parse_outcome_prices(market_data: dict) -> Optional[Tuple[float, float]]:
     """Return (yes_price, no_price) or None if unreadable."""
     outcome_prices = market_data.get("outcomePrices", [])
@@ -197,10 +210,14 @@ def _parse_bucket_market(
     if yes_price <= 0.01 or yes_price >= 0.99:
         return None
 
-    try:
-        spread = float(market_data.get("spread", 0) or 0)
-    except (ValueError, TypeError):
-        spread = 0.0
+    spread = _to_float(market_data.get("spread"), 0.0)
+    # Prefer the numeric liquidity/volume fields; fall back to the string ones.
+    liquidity = _to_float(market_data.get("liquidityNum"), None)
+    if liquidity is None:
+        liquidity = _to_float(market_data.get("liquidity"), 0.0)
+    volume = _to_float(market_data.get("volumeNum"), None)
+    if volume is None:
+        volume = _to_float(market_data.get("volume"), 0.0)
 
     return WeatherMarket(
         slug=event_slug,
@@ -217,7 +234,10 @@ def _parse_bucket_market(
         yes_price=yes_price,
         no_price=no_price,
         spread=spread,
-        volume=float(market_data.get("volume", 0) or 0),
+        volume=volume,
+        liquidity=liquidity,
+        best_bid=_to_float(market_data.get("bestBid"), None),
+        best_ask=_to_float(market_data.get("bestAsk"), None),
     )
 
 
