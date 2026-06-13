@@ -123,6 +123,27 @@ export interface WeatherSignal {
   ensemble_members: number
   actionable: boolean
   platform?: string
+  // Dashboard redesign: exact market identity + cost-aware economics
+  slug?: string
+  bucket_label?: string
+  low_f?: number | null
+  high_f?: number | null
+  net_edge?: number
+  entry_price?: number
+  cost?: number
+  rel_spread?: number
+  liquidity?: number
+  spread?: number
+  yes_price?: number
+  no_price?: number
+  bias?: number
+}
+
+export interface EventLogEntry {
+  timestamp: string
+  type: 'info' | 'success' | 'warning' | 'error' | 'data' | 'trade' | 'heartbeat'
+  message: string
+  data?: Record<string, unknown>
 }
 
 export interface DashboardData {

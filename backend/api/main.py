@@ -197,6 +197,20 @@ class WeatherSignalResponse(BaseModel):
     ensemble_std: float
     ensemble_members: int
     actionable: bool = False
+    # Identify the exact market + the cost-aware economics (dashboard redesign).
+    slug: str = ""                      # event slug -> https://polymarket.com/event/<slug>
+    bucket_label: str = ""              # the real range, e.g. "88-89°F"
+    low_f: Optional[float] = None
+    high_f: Optional[float] = None
+    net_edge: float = 0.0               # edge after costs (what we gate/size on)
+    entry_price: float = 0.0            # effective price we'd pay (real ask)
+    cost: float = 0.0                   # per-share cost (spread/2 + fee)
+    rel_spread: float = 0.0             # spread as a fraction of the side price
+    liquidity: float = 0.0              # $ resting in the book
+    spread: float = 0.0
+    yes_price: float = 0.0
+    no_price: float = 0.0
+    bias: float = 0.0                   # per-station bias applied (subtracted from mean)
 
 
 class DashboardData(BaseModel):
@@ -653,6 +667,7 @@ async def get_weather_signals():
 
 
 def _weather_signal_to_response(s) -> WeatherSignalResponse:
+    from backend.data.weather import get_station_bias
     return WeatherSignalResponse(
         market_id=s.market.market_id,
         city_key=s.market.city_key,
@@ -671,6 +686,19 @@ def _weather_signal_to_response(s) -> WeatherSignalResponse:
         ensemble_std=s.ensemble_std,
         ensemble_members=s.ensemble_members,
         actionable=s.passes_threshold,
+        slug=s.market.slug,
+        bucket_label=s.market.bucket_label,
+        low_f=s.market.low_f,
+        high_f=s.market.high_f,
+        net_edge=s.net_edge,
+        entry_price=s.entry_price,
+        cost=s.cost,
+        rel_spread=s.rel_spread,
+        liquidity=s.market.liquidity,
+        spread=s.market.spread,
+        yes_price=s.market.yes_price,
+        no_price=s.market.no_price,
+        bias=get_station_bias(s.market.city_key, s.market.metric),
     )
 
 
