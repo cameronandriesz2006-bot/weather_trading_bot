@@ -7,6 +7,8 @@ from typing import List, Optional
 import asyncio
 import json
 import os
+import time
+import httpx
 
 from backend.config import settings
 from backend.models.database import (
@@ -130,6 +132,9 @@ class TradeResponse(BaseModel):
     target_date: Optional[str] = None
     settlement_time: Optional[datetime] = None
     market_type: Optional[str] = None
+    # Mark-to-market (display only): current price of the side we hold + unrealized P&L
+    current_price: Optional[float] = None
+    unrealized_pnl: Optional[float] = None
 
 
 class BotStats(BaseModel):
@@ -658,8 +663,13 @@ async def get_weather_signals():
         return []
 
 
-def _trade_to_response(t) -> TradeResponse:
-    """Serialize a Trade, deriving readable market fields from the event slug."""
+def _trade_to_response(t, current_price: Optional[float] = None) -> TradeResponse:
+    """Serialize a Trade, deriving readable market fields from the event slug.
+
+    current_price (the live price of the side we hold) enables a mark-to-market
+    unrealized P&L for open positions: what we'd realize if we sold now, using
+    the same cash-staked odds as settlement (ignores exit spread/fees).
+    """
     from backend.data.weather_markets import parse_event_slug
     from backend.data.weather import CITY_CONFIG
     city_name = None
@@ -670,6 +680,11 @@ def _trade_to_response(t) -> TradeResponse:
         city_key, metric, td = parsed
         city_name = CITY_CONFIG.get(city_key, {}).get("name", city_key)
         target_date = td.isoformat()
+
+    unrealized = None
+    if current_price is not None and not t.settled and t.entry_price and 0 < t.entry_price < 1:
+        unrealized = round(t.size * (current_price - t.entry_price) / t.entry_price, 2)
+
     return TradeResponse(
         id=t.id,
         market_ticker=t.market_ticker,
@@ -688,7 +703,52 @@ def _trade_to_response(t) -> TradeResponse:
         target_date=target_date,
         settlement_time=getattr(t, "settlement_time", None),
         market_type=getattr(t, "market_type", None),
+        current_price=current_price,
+        unrealized_pnl=unrealized,
     )
+
+
+# --- Mark-to-market price lookup (cached) ---------------------------------
+_mtm_cache: dict = {}   # market_id -> (ts, (yes_price, no_price))
+_MTM_TTL = 30.0
+
+
+async def _fetch_outcome_prices(client: httpx.AsyncClient, market_id: str):
+    """(yes, no) current prices for a Polymarket market id, cached briefly."""
+    now = time.time()
+    cached = _mtm_cache.get(market_id)
+    if cached and now - cached[0] < _MTM_TTL:
+        return cached[1]
+    try:
+        r = await client.get(f"https://gamma-api.polymarket.com/markets/{market_id}")
+        if r.status_code != 200:
+            return None
+        op = r.json().get("outcomePrices")
+        if isinstance(op, str):
+            op = json.loads(op)
+        if not op or len(op) < 2:
+            return None
+        pair = (float(op[0]), float(op[1]))
+        _mtm_cache[market_id] = (now, pair)
+        return pair
+    except Exception:
+        return None
+
+
+async def _current_side_prices(trades) -> dict:
+    """Map trade.id -> current price of the side held, for open weather trades."""
+    out: dict = {}
+    todo = [t for t in trades if not t.settled and getattr(t, "market_type", None) == "weather"]
+    if not todo:
+        return out
+    async with httpx.AsyncClient(timeout=8.0) as client:
+        for t in todo:
+            pair = await _fetch_outcome_prices(client, t.market_ticker)
+            if pair is None:
+                continue
+            yes, no = pair
+            out[t.id] = yes if t.direction in ("yes", "up", "above") else no
+    return out
 
 
 def _weather_signal_to_response(s) -> WeatherSignalResponse:
@@ -815,9 +875,10 @@ async def get_dashboard(db: Session = Depends(get_db)):
     windows = []
     signals = []
 
-    # Recent trades
+    # Recent trades (with mark-to-market prices for open positions)
     trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
-    recent_trades = [_trade_to_response(t) for t in trades]
+    side_prices = await _current_side_prices(trades)
+    recent_trades = [_trade_to_response(t, current_price=side_prices.get(t.id)) for t in trades]
 
     # Equity curve
     equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()

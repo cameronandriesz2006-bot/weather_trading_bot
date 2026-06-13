@@ -72,6 +72,8 @@ export interface Trade {
   target_date?: string | null
   settlement_time?: string | null
   market_type?: string | null
+  current_price?: number | null
+  unrealized_pnl?: number | null
 }
 
 export interface BotStats {

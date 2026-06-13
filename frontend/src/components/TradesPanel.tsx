@@ -100,20 +100,31 @@ export function TradesPanel({ trades }: { trades: Trade[] }) {
               <th className="text-left font-medium px-4 py-2.5">Market</th>
               <th className="text-center font-medium px-3 py-2.5">Side</th>
               <th className="text-right font-medium px-3 py-2.5">Entry</th>
+              <th className="text-right font-medium px-3 py-2.5">Now</th>
               <th className="text-right font-medium px-3 py-2.5">Size</th>
+              <th className="text-right font-medium px-3 py-2.5">Unrealized</th>
               <th className="text-right font-medium px-4 py-2.5">Settles in</th>
             </tr>
           </thead>
           <tbody>
-            {rows.map(t => (
-              <tr key={t.id} className="border-b border-neutral-800/60">
-                <td className="px-4 py-2.5"><MarketCell t={t} /></td>
-                <td className="px-3 py-2.5 text-center"><SideCell dir={t.direction} /></td>
-                <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{(t.entry_price * 100).toFixed(0)}¢</td>
-                <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">${t.size.toFixed(0)}</td>
-                <td className="px-4 py-2.5 text-right tabular-nums text-neutral-400">{settlesIn(t.target_date)}</td>
-              </tr>
-            ))}
+            {rows.map(t => {
+              const hasMtm = t.current_price != null
+              const up = (t.unrealized_pnl ?? 0) >= 0
+              const pct = hasMtm && t.entry_price ? (t.current_price! - t.entry_price) / t.entry_price * 100 : 0
+              return (
+                <tr key={t.id} className="border-b border-neutral-800/60">
+                  <td className="px-4 py-2.5"><MarketCell t={t} /></td>
+                  <td className="px-3 py-2.5 text-center"><SideCell dir={t.direction} /></td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{(t.entry_price * 100).toFixed(0)}¢</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{hasMtm ? `${(t.current_price! * 100).toFixed(0)}¢` : '—'}</td>
+                  <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">${t.size.toFixed(0)}</td>
+                  <td className={`px-3 py-2.5 text-right tabular-nums ${hasMtm ? (up ? 'text-green-400' : 'text-red-400') : 'text-neutral-500'}`}>
+                    {hasMtm ? `${up ? '+' : ''}$${(t.unrealized_pnl ?? 0).toFixed(2)} (${up ? '+' : ''}${pct.toFixed(0)}%)` : '—'}
+                  </td>
+                  <td className="px-4 py-2.5 text-right tabular-nums text-neutral-400">{settlesIn(t.target_date)}</td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       ) : (
