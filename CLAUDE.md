@@ -101,6 +101,11 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
    breaker now guards the weather job too (was crypto-only). Wide-spread illiquid buckets are
    correctly filtered (e.g. a +30% gross edge can drop below 8% net). Tests:
    `tests/test_weather_signal_costs.py`.
+   **Sizing convention (fixed):** `Trade.size` is the CASH staked. `calculate_pnl` now
+   pays the prediction-market net odds on a win (`size*(1-p)/p`) and loses the full stake
+   on a loss (`-size`) — consistent with the Kelly cash fraction and the $500 exposure cap.
+   (It previously treated `size` as a contract count, so a loss was only `size*p`; existing
+   settled trades were re-graded.) Tests: `tests/test_pnl.py`.
 
 7. **Liquidity/slippage + sizing realism (Phase 7+, Layer 1) — FIXED.** The reader now
    captures `liquidity` (Gamma `liquidityNum`) and live `best_bid`/`best_ask`; signals enter

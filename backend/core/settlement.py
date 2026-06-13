@@ -124,14 +124,16 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     """
     Calculate P&L for a trade given the settlement value, NET of fees.
 
-    settlement_value: 1.0 if Up/Yes outcome, 0.0 if Down/No outcome
+    `trade.size` is the CASH staked (dollars). On a prediction market you buy
+    ``size / entry_price`` contracts at ``entry_price`` each, and each winning
+    contract pays $1. So:
+      - win:  profit = size * (1 - entry_price) / entry_price   (the net odds)
+      - loss: you lose the full stake = -size
 
-    Maps up->yes, down->no internally:
-    - UP position wins when settlement = 1.0
-    - DOWN position wins when settlement = 0.0
+    settlement_value: 1.0 if Up/Yes outcome won, 0.0 if Down/No outcome won.
 
-    The spread cost is already baked into trade.entry_price (we enter at the ask);
-    trade.fee is the explicit platform fee and is subtracted here.
+    Maps up->yes, down->no internally. The spread cost is already baked into
+    trade.entry_price (we enter at the ask); trade.fee is subtracted here.
     """
     # Map up/down to yes/no logic
     direction = trade.direction
@@ -140,16 +142,18 @@ def calculate_pnl(trade: Trade, settlement_value: float) -> float:
     elif direction == "down":
         direction = "no"
 
-    if direction == "yes":
-        if settlement_value == 1.0:
-            pnl = trade.size * (1.0 - trade.entry_price)
-        else:
-            pnl = -trade.size * trade.entry_price
-    else:  # NO / DOWN position
-        if settlement_value == 0.0:
-            pnl = trade.size * (1.0 - trade.entry_price)
-        else:
-            pnl = -trade.size * trade.entry_price
+    won = (
+        (direction == "yes" and settlement_value == 1.0)
+        or (direction == "no" and settlement_value == 0.0)
+    )
+
+    price = trade.entry_price
+    if won and 0.0 < price < 1.0:
+        pnl = trade.size * (1.0 - price) / price
+    elif won:
+        pnl = 0.0           # bought at certainty: no upside
+    else:
+        pnl = -trade.size   # losing side: lose the full stake
 
     pnl -= (getattr(trade, "fee", 0.0) or 0.0)
 
