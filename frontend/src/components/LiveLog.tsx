@@ -11,9 +11,15 @@ const TYPE_COLOR: Record<string, string> = {
   info: 'text-neutral-400',
 }
 
+// Backend sends UTC timestamps without a tz marker; tag them so the browser
+// converts to local time instead of assuming they're already local.
+function asUtc(ts: string): string {
+  return /[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : ts + 'Z'
+}
+
 function fmtTime(ts: string): string {
   try {
-    return new Date(ts).toLocaleTimeString('en-US', { hour12: false })
+    return new Date(asUtc(ts)).toLocaleTimeString('en-US', { hour12: false })
   } catch {
     return '--:--:--'
   }

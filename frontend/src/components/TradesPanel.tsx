@@ -44,6 +44,12 @@ function isLong(dir: string): boolean {
   return dir === 'yes' || dir === 'up' || dir === 'above'
 }
 
+// Backend sends UTC timestamps without a tz marker; tag them so the browser
+// reads them as UTC (otherwise "X ago" is off by the local UTC offset).
+function asUtc(ts: string): string {
+  return /[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : ts + 'Z'
+}
+
 const POLY = 'https://polymarket.com/event/'
 
 function MarketCell({ t }: { t: Trade }) {
@@ -157,7 +163,7 @@ export function TradesPanel({ trades }: { trades: Trade[] }) {
                     {t.pnl != null ? `${t.pnl >= 0 ? '+' : ''}$${t.pnl.toFixed(2)}` : '—'}
                   </td>
                   <td className="px-4 py-2.5 text-right text-neutral-500 text-xs">
-                    {t.settlement_time ? `${formatDistanceToNow(new Date(t.settlement_time))} ago` : '—'}
+                    {t.settlement_time ? `${formatDistanceToNow(new Date(asUtc(t.settlement_time)))} ago` : '—'}
                   </td>
                 </tr>
               )

@@ -113,8 +113,16 @@ async def weather_scan_and_trade_job():
                 return
 
             trades_executed = 0
-            for signal in actionable[:MAX_TRADES_PER_SCAN]:
-                # Check if we already have a trade for this market
+            # Iterate ALL actionable signals (sorted by edge), skipping markets we
+            # already hold, and place up to MAX_TRADES_PER_SCAN *new* trades.
+            # (Previously this looked only at actionable[:MAX_TRADES_PER_SCAN]; once
+            # the top-N by edge were all already held, it placed nothing and never
+            # reached the other actionable buckets below them.)
+            for signal in actionable:
+                if trades_executed >= MAX_TRADES_PER_SCAN:
+                    break
+
+                # Skip markets we already have an open trade in.
                 existing = db.query(Trade).filter(
                     Trade.market_ticker == signal.market.market_id,
                     Trade.settled == False,
@@ -136,9 +144,6 @@ async def weather_scan_and_trade_job():
 
                 if state.bankroll < MIN_TRADE_SIZE:
                     log_event("warning", f"Bankroll too low: ${state.bankroll:.2f}")
-                    break
-
-                if trades_executed >= MAX_TRADES_PER_SCAN:
                     break
 
                 # Enter at the effective (cost-adjusted) ask, and book the fee.
