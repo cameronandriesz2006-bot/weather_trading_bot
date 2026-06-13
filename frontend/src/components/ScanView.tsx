@@ -76,13 +76,14 @@ export function ScanView({ signals, held = {} }: ScanViewProps) {
         map.set(slug, g)
       }
       g.signals.push(s)
-      if (s.actionable) g.actionableCount++
+      // Count only actionable opportunities we don't already hold.
+      if (s.actionable && !held[s.market_id]) g.actionableCount++
     }
     const arr = Array.from(map.values())
     arr.forEach(g => g.signals.sort((a, b) => bucketSortKey(a) - bucketSortKey(b)))
     arr.sort((a, b) => b.actionableCount - a.actionableCount || a.cityName.localeCompare(b.cityName))
     return arr
-  }, [signals])
+  }, [signals, held])
 
   const [selectedSlug, setSelectedSlug] = useState<string | null>(null)
   const selected = useMemo(() => {
@@ -91,8 +92,11 @@ export function ScanView({ signals, held = {} }: ScanViewProps) {
   }, [events, selectedSlug])
 
   const opportunities = useMemo(
-    () => signals.filter(s => s.actionable).sort((a, b) => (b.net_edge ?? 0) - (a.net_edge ?? 0)).slice(0, 8),
-    [signals],
+    () => signals
+      .filter(s => s.actionable && !held[s.market_id])   // exclude markets we already hold
+      .sort((a, b) => (b.net_edge ?? 0) - (a.net_edge ?? 0))
+      .slice(0, 8),
+    [signals, held],
   )
 
   if (signals.length === 0) {
