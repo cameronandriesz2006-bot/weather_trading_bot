@@ -6,7 +6,7 @@ from typing import List, Optional
 
 from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
-from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG
+from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
 from backend.models.database import SessionLocal, Signal
 
@@ -146,9 +146,13 @@ async def generate_weather_signal(
     else:
         suggested_size = 0.0
 
-    # Ensemble stats for display
+    # Ensemble stats for display (show the bias correction we priced on)
     mean_val = forecast.mean_high if market.metric == "high" else forecast.mean_low
     std_val = forecast.std_high if market.metric == "high" else forecast.std_low
+    bias = get_station_bias(market.city_key, market.metric)
+    ensemble_str = f"{mean_val:.1f}F"
+    if abs(bias) >= 0.05:
+        ensemble_str = f"{mean_val:.1f}F (bias {bias:+.1f} -> {mean_val - bias:.1f}F)"
 
     # Build reasoning — mirror passes_threshold exactly so the recorded note
     # explains precisely why a bucket was or wasn't actionable.
@@ -170,7 +174,7 @@ async def generate_weather_signal(
     reasoning = (
         f"[{'ACTIONABLE' if actionable else 'FILTERED'}]{filter_note} "
         f"{market.city_name} {market.metric} {market.bucket_label} on {market.target_date} | "
-        f"Ensemble: {mean_val:.1f}F +/- {std_val:.1f}F ({forecast.num_members} members) | "
+        f"Ensemble: {ensemble_str} +/- {std_val:.1f}F ({forecast.num_members} members) | "
         f"Model YES: {model_yes_prob:.0%} vs Market: {market_yes_prob:.0%} | "
         f"Edge: {edge:+.1%} -cost {cost:.1%} = net {net_edge:+.1%} -> {direction.upper()} @ {entry_price:.0%}"
     )

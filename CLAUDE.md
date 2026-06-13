@@ -32,7 +32,7 @@ serves a React dashboard.
 | 1 | **Cut crypto cleanly** — extracted `calculate_edge`/`calculate_kelly_size` to `backend/core/sizing.py`; deleted `signals.py`/`crypto.py`/`btc_markets.py`/`markets.py`; removed BTC scan job; BTC endpoints now empty stubs; dropped BTC-only config | **done** |
 | 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **done** |
 | 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess) | **done** (Polymarket; Kalshi structured-fields part deferred until Kalshi is enabled) |
-| 4 | Honest probability — fitted+widened distribution + lead-time uncertainty **done**; bias correction & climatology **deferred** (need run-time forecast-vs-actual history; markets are 0–1 day out so climatology barely matters) | core **done** |
+| 4 | Honest probability — fitted+widened distribution + lead-time uncertainty **done**; per-station bias correction **done** (historical backfill, no sim needed); climatology **deferred** (markets are 0–1 day out so climatology barely matters) | **done** |
 | 6 | Real costs — subtract fees+spread before edge check and in P&L; add fee field; re-tune sizing; weather daily-loss stop | **done** |
 | 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | next (or run-and-evaluate, Phase 7, first) |
 | 7 | Run weeks in simulation; decision point: does it beat the price net of fees? | |
@@ -86,10 +86,9 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
    spread is **widened** (`sigma_eff = max(sigma*INFLATION, FLOOR) + lead_days*PER_LEAD_DAY`,
    config knobs `WEATHER_SIGMA_*`) because the GFS ensemble is under-dispersed. Effect: live
    median |edge| fell to ~1% and max from ~95% → ~36%; a unanimous ensemble no longer implies
-   100%. Tests: `tests/test_forecast_distribution.py`. **Still deferred:** per-station bias
-   correction and climatology blend — both need forecast-vs-actual history the sim will only
-   produce by running, and at 0–1 day lead climatology adds little. `_fraction_in_range` is
-   kept as a raw reference but is no longer the traded probability.
+   100%. Tests: `tests/test_forecast_distribution.py`. Per-station **bias correction is now
+   done** (issue 11). **Still deferred:** climatology blend — at 0–1 day lead it adds little.
+   `_fraction_in_range` is kept as a raw reference but is no longer the traded probability.
 
 6. **No fees anywhere (Phase 6) — FIXED.** The dominant Polymarket cost is the bid/ask
    spread, so the signal now enters at the effective **ask** (`mid + spread/2`, live spread
@@ -123,6 +122,17 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
 10. **Cost-aware economics now persisted — DONE.** `Signal` gained `net_edge`, `entry_price`,
    `cost`, `rel_spread`, `liquidity` (migrated in `ensure_schema`), so the scoreboard can prove
    an edge NET of cost and the dashboard (Q8) has the fields it needs.
+11. **Per-station bias correction — DONE (historical backfill, no sim needed).** Raw GFS has
+   repeatable per-station offsets the market has already priced in (measured: NYC & LA run
+   ~1.2F cold on overnight lows, Chicago/LA ~0.9F warm on highs). `backend/data/bias_backfill.py`
+   pulls forecast (historical-forecast-api, GFS) vs actual (archive-api, ERA5) over a 60-day
+   window and writes `backend/data/station_bias.json`; `weather.get_station_bias()` reads it and
+   `EnsembleForecast.corrected_mean()` SUBTRACTS the bias before pricing buckets. Gated by
+   `WEATHER_BIAS_ENABLED` / `_MIN_SAMPLES` (10) / `_MAX_SHIFT_F` (4F clamp); zero bias = cold-start
+   no-op. Re-run the script periodically (or wire a job) to refresh. Tests:
+   `tests/test_bias_correction.py`. **Deferred refinement:** a live verification loop against the
+   official settlement station (NWS) to refine the archive-derived prior — `fetch_nws_observed_temperature`
+   is its data source (do not delete).
 
 ### Minor cleanup (catch along the way)
 - `database.py ensure_schema()` swallows schema-migration errors silently — make it log

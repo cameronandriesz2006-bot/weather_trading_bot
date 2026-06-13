@@ -87,6 +87,15 @@ class Settings(BaseSettings):
     WEATHER_SIGMA_FLOOR_F: float = 2.0        # irreducible uncertainty (deg F), even if unanimous
     WEATHER_SIGMA_PER_LEAD_DAY_F: float = 0.7  # extra uncertainty per day of lead time
 
+    # Per-station bias correction. Raw GFS has repeatable per-station offsets the
+    # market has already priced in (e.g. ~2F cold on NYC overnight lows); left
+    # uncorrected they masquerade as edge. We measure bias = mean(forecast - actual)
+    # from historical archives (backend/data/bias_backfill.py -> station_bias.json)
+    # and SUBTRACT it from the forecast mean before pricing buckets.
+    WEATHER_BIAS_ENABLED: bool = True
+    WEATHER_BIAS_MIN_SAMPLES: int = 10        # don't correct on noise: need this many obs
+    WEATHER_BIAS_MAX_SHIFT_F: float = 4.0     # safety cap on the correction magnitude (deg F)
+
     class Config:
         env_file = ".env"
         extra = "ignore"  # tolerate leftover/unknown keys in .env (e.g. removed BTC settings)

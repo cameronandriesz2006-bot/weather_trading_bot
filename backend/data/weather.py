@@ -1,9 +1,11 @@
 """Weather data fetcher using Open-Meteo Ensemble API and NWS observations."""
 import httpx
+import json
 import logging
 import math
 from dataclasses import dataclass, field
 from datetime import datetime, date, timedelta
+from pathlib import Path
 from typing import Dict, List, Optional
 import statistics
 import time
@@ -52,6 +54,48 @@ CITY_CONFIG: Dict[str, dict] = {
         "nws_station": "KBKF",
     },
 }
+
+
+# --- Per-station bias correction (see backend/data/bias_backfill.py) ----------
+# station_bias.json holds bias_f = mean(forecast - actual) per station+metric.
+# We SUBTRACT it from the forecast mean before pricing buckets.
+_BIAS_FILE = Path(__file__).with_name("station_bias.json")
+_bias_cache: Optional[Dict[str, dict]] = None
+
+
+def _load_bias() -> Dict[str, dict]:
+    """Load (and memoise) the station-bias table; {} if absent/unreadable."""
+    global _bias_cache
+    if _bias_cache is None:
+        try:
+            _bias_cache = json.loads(_BIAS_FILE.read_text()).get("stations", {}) or {}
+        except Exception:
+            _bias_cache = {}
+    return _bias_cache
+
+
+def reload_station_bias() -> Dict[str, dict]:
+    """Drop the cache so a freshly-written station_bias.json is picked up."""
+    global _bias_cache
+    _bias_cache = None
+    return _load_bias()
+
+
+def get_station_bias(city_key: str, metric: str) -> float:
+    """
+    Signed correction (deg F) to SUBTRACT from the model mean for this station.
+    Positive => the model runs warm. Returns 0.0 when disabled, missing, or
+    under-sampled, and is clamped to +/- WEATHER_BIAS_MAX_SHIFT_F for safety.
+    """
+    from backend.config import settings
+    if not settings.WEATHER_BIAS_ENABLED:
+        return 0.0
+    entry = _load_bias().get(city_key, {}).get(metric)
+    if not entry or entry.get("samples", 0) < settings.WEATHER_BIAS_MIN_SAMPLES:
+        return 0.0
+    bias = float(entry.get("bias_f", 0.0))
+    cap = settings.WEATHER_BIAS_MAX_SHIFT_F
+    return max(-cap, min(cap, bias))
 
 
 @dataclass
@@ -150,17 +194,22 @@ class EnsembleForecast:
         p_hi = self._normal_cdf(hi, mean, sigma) if hi is not None else 1.0
         return max(0.0, p_hi - p_lo)
 
+    def corrected_mean(self, metric: str) -> float:
+        """Forecast mean with the per-station bias removed (the mean we price on)."""
+        raw = self.mean_high if metric == "high" else self.mean_low
+        return raw - get_station_bias(self.city_key, metric)
+
     def probability_high_in_range(self, low_f: Optional[float], high_f: Optional[float]) -> float:
-        """Probability the daily HIGH falls in the bucket (fitted, widened Normal)."""
+        """Probability the daily HIGH falls in the bucket (fitted, widened, bias-corrected)."""
         if not self.member_highs:
             return 0.5
-        return self._fitted_bucket_prob(self.mean_high, self.std_high, low_f, high_f)
+        return self._fitted_bucket_prob(self.corrected_mean("high"), self.std_high, low_f, high_f)
 
     def probability_low_in_range(self, low_f: Optional[float], high_f: Optional[float]) -> float:
-        """Probability the daily LOW falls in the bucket (fitted, widened Normal)."""
+        """Probability the daily LOW falls in the bucket (fitted, widened, bias-corrected)."""
         if not self.member_lows:
             return 0.5
-        return self._fitted_bucket_prob(self.mean_low, self.std_low, low_f, high_f)
+        return self._fitted_bucket_prob(self.corrected_mean("low"), self.std_low, low_f, high_f)
 
     @property
     def ensemble_agreement(self) -> float:
