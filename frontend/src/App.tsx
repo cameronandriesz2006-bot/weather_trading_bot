@@ -56,6 +56,11 @@ function App() {
 
   const openTrades = recentTrades.filter(t => !t.settled)
   const openExposure = openTrades.reduce((a, t) => a + (t.size || 0), 0)
+  // Map of market_id -> open position, so the scan view can mark buckets we hold.
+  const heldByMarket = openTrades.reduce((m, t) => {
+    m[t.market_ticker] = { direction: t.direction, entry_price: t.entry_price }
+    return m
+  }, {} as Record<string, { direction: string; entry_price: number }>)
   const actionableCount = weatherSignals.filter(s => s.actionable).length
   // win_rate may arrive as a fraction (0-1) or a percent; normalise.
   const winRatePct = stats.win_rate <= 1 ? stats.win_rate * 100 : stats.win_rate
@@ -130,7 +135,7 @@ function App() {
         </div>
 
         {/* ===== Scan view (hero) ===== */}
-        <ScanView signals={weatherSignals} />
+        <ScanView signals={weatherSignals} held={heldByMarket} />
 
         {/* ===== Positions & trades ===== */}
         <section>

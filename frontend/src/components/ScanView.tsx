@@ -48,7 +48,13 @@ function filterReason(s: WeatherSignal): string {
 
 const POLY_EVENT_URL = 'https://polymarket.com/event/'
 
-export function ScanView({ signals }: { signals: WeatherSignal[] }) {
+interface ScanViewProps {
+  signals: WeatherSignal[]
+  /** market_id -> open position we currently hold (to distinguish from signals) */
+  held?: Record<string, { direction: string; entry_price: number }>
+}
+
+export function ScanView({ signals, held = {} }: ScanViewProps) {
   const events = useMemo<EventGroup[]>(() => {
     const map = new Map<string, EventGroup>()
     for (const s of signals) {
@@ -191,18 +197,27 @@ export function ScanView({ signals }: { signals: WeatherSignal[] }) {
                 {selected.signals.map(s => {
                   const yesEdge = s.model_probability - s.market_probability
                   const net = (yesEdge >= 0 ? 1 : -1) * (s.net_edge ?? 0)
+                  const heldPos = held[s.market_id]
+                  const rowBg = heldPos ? 'bg-amber-500/5' : s.actionable ? 'bg-green-500/5' : ''
                   return (
-                    <tr key={s.market_id} className={`border-b border-neutral-800/60 ${s.actionable ? 'bg-green-500/5' : ''}`}>
-                      <td className="px-5 py-2.5 text-neutral-200 font-medium">{s.bucket_label}</td>
+                    <tr key={s.market_id} className={`border-b border-neutral-800/60 ${rowBg}`}>
+                      <td className="px-5 py-2.5 text-neutral-200 font-medium">
+                        {s.bucket_label}
+                        {heldPos && (
+                          <span className="ml-2 text-[10px] font-semibold uppercase text-amber-400 border border-amber-500/40 rounded px-1 py-0.5">held</span>
+                        )}
+                      </td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{pct(s.model_probability)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{pct(s.market_probability)}</td>
                       <td className={`px-3 py-2.5 text-right tabular-nums ${yesEdge >= 0 ? 'text-green-400' : 'text-red-400'}`}>{signedPct(yesEdge)}</td>
                       <td className={`px-3 py-2.5 text-right tabular-nums ${net >= 0 ? 'text-green-400' : 'text-red-400'}`}>{signedPct(net)}</td>
                       <td className="px-3 py-2.5 text-right tabular-nums text-neutral-300">{s.actionable ? `$${(s.suggested_size ?? 0).toFixed(0)}` : '—'}</td>
                       <td className="px-5 py-2.5">
-                        {s.actionable
-                          ? <span className="text-green-400 font-medium">✓ BUY {(s.direction || '').toUpperCase()} @ {((s.entry_price ?? 0) * 100).toFixed(0)}¢</span>
-                          : <span className="text-neutral-500">{filterReason(s)}</span>}
+                        {heldPos
+                          ? <span className="text-amber-400 font-medium">● holding {heldPos.direction.toUpperCase()} @ {(heldPos.entry_price * 100).toFixed(0)}¢</span>
+                          : s.actionable
+                            ? <span className="text-green-400">would buy {(s.direction || '').toUpperCase()} @ {((s.entry_price ?? 0) * 100).toFixed(0)}¢</span>
+                            : <span className="text-neutral-500">{filterReason(s)}</span>}
                       </td>
                     </tr>
                   )
