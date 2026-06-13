@@ -406,14 +406,21 @@ input:focus {
   font-family: 'JetBrains Mono', monospace;
 }
 
-/* Select dropdown styles */
+/* Select dropdown styles. The prefixed appearance resets are required so the
+   dark background actually applies on Windows (the native control otherwise
+   ignores background-color and renders a light system box). */
 select {
   cursor: pointer;
+  -webkit-appearance: none;
+  -moz-appearance: none;
+  appearance: none;
+  background-color: #171717; /* neutral-900 */
+  color: #f5f5f5;            /* neutral-100 */
 }
 
 select option {
-  background: #0a0a0a;
-  color: #e5e5e5;
+  background: #171717;
+  color: #f5f5f5;
 }
 
 /* Refresh countdown bar */

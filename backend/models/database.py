@@ -30,6 +30,7 @@ class Trade(Base):
     platform = Column(String)
     event_slug = Column(String, nullable=True)
     market_type = Column(String, default="btc", index=True)  # "btc" or "weather"
+    bucket_label = Column(String, nullable=True)  # exact range bet, e.g. "88-89°F" (weather)
 
     # Trade details
     direction = Column(String)  # "up" or "down"
@@ -191,6 +192,14 @@ def ensure_schema():
         with engine.connect() as conn:
             with conn.begin():
                 conn.execute(text("ALTER TABLE trades ADD COLUMN fee FLOAT DEFAULT 0.0"))
+
+    if "bucket_label" not in columns:
+        try:
+            with engine.connect() as conn:
+                with conn.begin():
+                    conn.execute(text("ALTER TABLE trades ADD COLUMN bucket_label VARCHAR"))
+        except Exception as e:
+            logger.warning(f"Could not add trades.bucket_label: {e}")
 
     # Add calibration columns to signals table
     try:

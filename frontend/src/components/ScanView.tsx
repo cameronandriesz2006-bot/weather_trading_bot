@@ -131,17 +131,20 @@ export function ScanView({ signals }: { signals: WeatherSignal[] }) {
       <div>
         <div className="flex flex-wrap items-center gap-3 mb-3">
           <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400">Scanned markets</h2>
-          <select
-            value={selected?.slug ?? ''}
-            onChange={e => setSelectedSlug(e.target.value)}
-            className="bg-neutral-900 border border-neutral-700 rounded-md px-3 py-2 text-sm text-neutral-100 focus:outline-none focus:border-neutral-500 min-w-[300px]"
-          >
-            {events.map(e => (
-              <option key={e.slug} value={e.slug}>
-                {e.cityName} · {metricLabel(e.metric)} · {fmtDate(e.targetDate)}{e.actionableCount > 0 ? `  (${e.actionableCount} ✓)` : ''}
-              </option>
-            ))}
-          </select>
+          <div className="relative inline-block">
+            <select
+              value={selected?.slug ?? ''}
+              onChange={e => setSelectedSlug(e.target.value)}
+              className="appearance-none bg-neutral-900 border border-neutral-700 rounded-md pl-3 pr-9 py-2 text-sm text-neutral-100 focus:outline-none focus:border-neutral-500 min-w-[300px] cursor-pointer"
+            >
+              {events.map(e => (
+                <option key={e.slug} value={e.slug} className="bg-neutral-900 text-neutral-100">
+                  {e.cityName} · {metricLabel(e.metric)} · {fmtDate(e.targetDate)}{e.actionableCount > 0 ? `  (${e.actionableCount} ✓)` : ''}
+                </option>
+              ))}
+            </select>
+            <span className="pointer-events-none absolute right-3 top-1/2 -translate-y-1/2 text-neutral-400 text-xs">▾</span>
+          </div>
           {selected && (
             <a
               href={`${POLY_EVENT_URL}${selected.slug}`}

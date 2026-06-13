@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchDashboard, runScan, startBot, stopBot } from './api'
 import { ScanView } from './components/ScanView'
-import { TradesTable } from './components/TradesTable'
+import { TradesPanel } from './components/TradesPanel'
 import { Scoreboard } from './components/Scoreboard'
 import { LiveLog } from './components/LiveLog'
 
@@ -135,10 +135,10 @@ function App() {
         {/* ===== Positions & trades ===== */}
         <section>
           <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-2">
-            Positions &amp; trades ({recentTrades.length})
+            Positions &amp; trades
           </h2>
           <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 overflow-hidden">
-            <TradesTable trades={recentTrades} />
+            <TradesPanel trades={recentTrades} />
           </div>
         </section>
 

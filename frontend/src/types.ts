@@ -65,6 +65,13 @@ export interface Trade {
   settled: boolean
   result: string
   pnl: number | null
+  // Readable market identity + settlement info
+  bucket_label?: string | null
+  city_name?: string | null
+  metric?: string | null
+  target_date?: string | null
+  settlement_time?: string | null
+  market_type?: string | null
 }
 
 export interface BotStats {

@@ -123,6 +123,13 @@ class TradeResponse(BaseModel):
     settled: bool
     result: str
     pnl: Optional[float]
+    # Readable market identity + settlement info (dashboard trades panel).
+    bucket_label: Optional[str] = None
+    city_name: Optional[str] = None
+    metric: Optional[str] = None
+    target_date: Optional[str] = None
+    settlement_time: Optional[datetime] = None
+    market_type: Optional[str] = None
 
 
 class BotStats(BaseModel):
@@ -358,22 +365,7 @@ async def get_trades(
         query = query.filter(Trade.result == status)
     trades = query.order_by(Trade.timestamp.desc()).limit(limit).all()
 
-    return [
-        TradeResponse(
-            id=t.id,
-            market_ticker=t.market_ticker,
-            platform=t.platform,
-            event_slug=t.event_slug,
-            direction=t.direction,
-            entry_price=t.entry_price,
-            size=t.size,
-            timestamp=t.timestamp,
-            settled=t.settled,
-            result=t.result,
-            pnl=t.pnl
-        )
-        for t in trades
-    ]
+    return [_trade_to_response(t) for t in trades]
 
 
 @app.get("/api/equity-curve")
@@ -666,6 +658,39 @@ async def get_weather_signals():
         return []
 
 
+def _trade_to_response(t) -> TradeResponse:
+    """Serialize a Trade, deriving readable market fields from the event slug."""
+    from backend.data.weather_markets import parse_event_slug
+    from backend.data.weather import CITY_CONFIG
+    city_name = None
+    metric = None
+    target_date = None
+    parsed = parse_event_slug(t.event_slug or "")
+    if parsed:
+        city_key, metric, td = parsed
+        city_name = CITY_CONFIG.get(city_key, {}).get("name", city_key)
+        target_date = td.isoformat()
+    return TradeResponse(
+        id=t.id,
+        market_ticker=t.market_ticker,
+        platform=t.platform,
+        event_slug=t.event_slug,
+        direction=t.direction,
+        entry_price=t.entry_price,
+        size=t.size,
+        timestamp=t.timestamp,
+        settled=t.settled,
+        result=t.result,
+        pnl=t.pnl,
+        bucket_label=getattr(t, "bucket_label", None),
+        city_name=city_name,
+        metric=metric,
+        target_date=target_date,
+        settlement_time=getattr(t, "settlement_time", None),
+        market_type=getattr(t, "market_type", None),
+    )
+
+
 def _weather_signal_to_response(s) -> WeatherSignalResponse:
     from backend.data.weather import get_station_bias
     return WeatherSignalResponse(
@@ -792,22 +817,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
 
     # Recent trades
     trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
-    recent_trades = [
-        TradeResponse(
-            id=t.id,
-            market_ticker=t.market_ticker,
-            platform=t.platform,
-            event_slug=t.event_slug,
-            direction=t.direction,
-            entry_price=t.entry_price,
-            size=t.size,
-            timestamp=t.timestamp,
-            settled=t.settled,
-            result=t.result,
-            pnl=t.pnl
-        )
-        for t in trades
-    ]
+    recent_trades = [_trade_to_response(t) for t in trades]
 
     # Equity curve
     equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()

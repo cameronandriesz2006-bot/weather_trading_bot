@@ -150,6 +150,7 @@ async def weather_scan_and_trade_job():
                     platform="polymarket",
                     event_slug=signal.market.slug,
                     market_type="weather",
+                    bucket_label=signal.market.bucket_label,
                     direction=signal.direction,
                     entry_price=entry_price,
                     size=trade_size,
