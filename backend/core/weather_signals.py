@@ -276,7 +276,16 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
 
 
 def _persist_weather_signals(signals: list):
-    """Save weather signals to DB for calibration tracking."""
+    """Save weather signals for calibration/history.
+
+    One row per market per UTC day: the row is updated in place as the day's
+    scans refine it, then frozen once executed. This keeps a full record of every
+    (non-dead) bucket — including filtered ones, so a bucket's edge can be seen to
+    evolve and flip actionable — WITHOUT writing a new row every 5-min scan (which
+    piled up ~22k rows/day). Dead rail buckets never reach here; the market reader
+    already drops them. Note: the live bot never reads these rows to decide trades —
+    every scan recomputes from scratch — so this is purely a record.
+    """
     to_save = [s for s in signals if abs(s.edge) > 0]
     if not to_save:
         return
@@ -284,36 +293,43 @@ def _persist_weather_signals(signals: list):
     db = SessionLocal()
     try:
         for signal in to_save:
-            # Dedup: skip if already logged for this market
+            day_start = signal.timestamp.replace(hour=0, minute=0, second=0, microsecond=0)
             existing = db.query(Signal).filter(
                 Signal.market_ticker == signal.market.market_id,
-                Signal.timestamp >= signal.timestamp.replace(second=0, microsecond=0),
-            ).first()
-            if existing:
+                Signal.market_type == "weather",
+                Signal.timestamp >= day_start,
+            ).order_by(Signal.timestamp.desc()).first()
+
+            # Once a day's signal has been executed (a trade was placed off it),
+            # freeze that trade-time snapshot — don't overwrite it with later scans.
+            if existing and existing.executed:
                 continue
 
-            db_signal = Signal(
-                market_ticker=signal.market.market_id,
-                platform=signal.market.platform,
-                market_type="weather",
-                timestamp=signal.timestamp,
-                direction=signal.direction,
-                model_probability=signal.model_probability,
-                market_price=signal.market_probability,
-                edge=signal.edge,
-                confidence=signal.confidence,
-                net_edge=signal.net_edge,
-                entry_price=signal.entry_price,
-                cost=signal.cost,
-                rel_spread=signal.rel_spread,
-                liquidity=signal.market.liquidity,
-                kelly_fraction=signal.kelly_fraction,
-                suggested_size=signal.suggested_size,
-                sources=signal.sources,
-                reasoning=signal.reasoning,
-                executed=False,
-            )
-            db.add(db_signal)
+            if existing is None:
+                existing = Signal(
+                    market_ticker=signal.market.market_id,
+                    platform=signal.market.platform,
+                    market_type="weather",
+                    executed=False,
+                )
+                db.add(existing)
+
+            # Upsert the latest snapshot for the day.
+            existing.timestamp = signal.timestamp
+            existing.direction = signal.direction
+            existing.model_probability = signal.model_probability
+            existing.market_price = signal.market_probability
+            existing.edge = signal.edge
+            existing.confidence = signal.confidence
+            existing.net_edge = signal.net_edge
+            existing.entry_price = signal.entry_price
+            existing.cost = signal.cost
+            existing.rel_spread = signal.rel_spread
+            existing.liquidity = signal.market.liquidity
+            existing.kelly_fraction = signal.kelly_fraction
+            existing.suggested_size = signal.suggested_size
+            existing.sources = signal.sources
+            existing.reasoning = signal.reasoning
 
         db.commit()
     except Exception as e:
