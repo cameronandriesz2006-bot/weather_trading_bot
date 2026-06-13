@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     SETTLEMENT_INTERVAL_SECONDS: int = 120
 
     # Risk management
-    DAILY_LOSS_LIMIT: float = 300.0
+    DAILY_LOSS_LIMIT: float = 750.0
     MAX_TRADE_SIZE: float = 75.0  # Per-trade hard cap inside the Kelly helper
     MAX_TOTAL_PENDING_TRADES: int = 20
 
@@ -77,7 +77,7 @@ class Settings(BaseSettings):
     # Max total exposure to OPEN (unsettled) weather positions at once. Enforced
     # as a hard ceiling per trade so it never overshoots (was a hard-coded $500 in
     # the scheduler, checked only once per scan -> it could blow past to ~$600).
-    WEATHER_MAX_ALLOCATION: float = 500.0
+    WEATHER_MAX_ALLOCATION: float = 2000.0
 
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the
