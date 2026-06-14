@@ -1,10 +1,8 @@
 # Prediction Market Trading Bot
 
-A multi-strategy trading bot that identifies pricing inefficiencies in prediction markets. Combines **BTC 5-minute microstructure analysis** with **ensemble weather forecasting** to trade on **Kalshi** and **Polymarket**. Features a professional React dashboard.
+A trading bot that identifies pricing inefficiencies in **daily high/low temperature** prediction markets. It builds its own **31-member ensemble weather forecast**, converts it into a probability for each market's temperature bucket, and trades when that differs from the market price by more than its edge threshold — on **Polymarket** (and **Kalshi**, when enabled). Features a React dashboard.
 
 ![Python](https://img.shields.io/badge/python-3.10+-blue) ![React](https://img.shields.io/badge/react-18+-61DAFB) ![TypeScript](https://img.shields.io/badge/typescript-5.0+-blue) ![License](https://img.shields.io/badge/license-MIT-green)
-
-![Dashboard](docs/dashboard.png)
 
 **100% free to run** - No paid APIs, no subscriptions. All data sources are free. Kalshi API key optional for Kalshi markets.
 

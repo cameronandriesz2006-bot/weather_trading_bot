@@ -13,7 +13,7 @@ import httpx
 from backend.config import settings
 from backend.models.database import (
     get_db, init_db, SessionLocal,
-    Signal, Trade, BotState, AILog, ScanLog
+    Signal, Trade, BotState,
 )
 
 from pydantic import BaseModel
@@ -58,61 +58,6 @@ ws_manager = ConnectionManager()
 
 
 # Pydantic response models
-class BtcPriceResponse(BaseModel):
-    price: float
-    change_24h: float
-    change_7d: float
-    market_cap: float
-    volume_24h: float
-    last_updated: datetime
-
-
-class BtcWindowResponse(BaseModel):
-    slug: str
-    market_id: str
-    up_price: float
-    down_price: float
-    window_start: datetime
-    window_end: datetime
-    volume: float
-    is_active: bool
-    is_upcoming: bool
-    time_until_end: float
-    spread: float
-
-
-class MicrostructureResponse(BaseModel):
-    rsi: float = 50.0
-    momentum_1m: float = 0.0
-    momentum_5m: float = 0.0
-    momentum_15m: float = 0.0
-    vwap_deviation: float = 0.0
-    sma_crossover: float = 0.0
-    volatility: float = 0.0
-    price: float = 0.0
-    source: str = "unknown"
-
-
-class SignalResponse(BaseModel):
-    market_ticker: str
-    market_title: str
-    platform: str
-    direction: str
-    model_probability: float
-    market_probability: float
-    edge: float
-    confidence: float
-    suggested_size: float
-    reasoning: str
-    timestamp: datetime
-    category: str = "crypto"
-    event_slug: Optional[str] = None
-    btc_price: float = 0.0
-    btc_change_24h: float = 0.0
-    window_end: Optional[datetime] = None
-    actionable: bool = False
-
-
 class TradeResponse(BaseModel):
     id: int
     market_ticker: str
@@ -235,10 +180,6 @@ class WeatherSignalResponse(BaseModel):
 
 class DashboardData(BaseModel):
     stats: BotStats
-    btc_price: Optional[BtcPriceResponse]
-    microstructure: Optional[MicrostructureResponse] = None
-    windows: List[BtcWindowResponse]
-    active_signals: List[SignalResponse]
     recent_trades: List[TradeResponse]
     equity_curve: List[dict]
     calibration: Optional[CalibrationSummary] = None
@@ -314,7 +255,7 @@ async def shutdown():
 # Core endpoints
 @app.get("/")
 async def root():
-    return {"status": "ok", "message": "BTC 5-Min Trading Bot API v3.0", "simulation_mode": settings.SIMULATION_MODE}
+    return {"status": "ok", "message": "Weather Trading Bot API v3.0", "simulation_mode": settings.SIMULATION_MODE}
 
 
 @app.get("/api/health")
@@ -357,32 +298,6 @@ async def get_stats(db: Session = Depends(get_db)):
     )
 
 
-# Legacy BTC endpoints — crypto strategy removed (Phase 1). Kept as empty stubs
-# so the existing frontend keeps working until the dashboard is reworked.
-@app.get("/api/btc/price", response_model=Optional[BtcPriceResponse])
-async def get_btc_price():
-    """Deprecated: BTC strategy removed. Always returns null."""
-    return None
-
-
-@app.get("/api/btc/windows", response_model=List[BtcWindowResponse])
-async def get_btc_windows():
-    """Deprecated: BTC strategy removed. Always returns []."""
-    return []
-
-
-@app.get("/api/signals", response_model=List[SignalResponse])
-async def get_signals():
-    """Deprecated: BTC signals removed. Always returns []."""
-    return []
-
-
-@app.get("/api/signals/actionable", response_model=List[SignalResponse])
-async def get_actionable_signals():
-    """Deprecated: BTC signals removed. Always returns []."""
-    return []
-
-
 @app.get("/api/trades", response_model=List[TradeResponse])
 async def get_trades(
     limit: int = 50,
@@ -416,17 +331,6 @@ async def get_equity_curve(db: Session = Depends(get_db)):
             })
 
     return curve
-
-
-@app.post("/api/simulate-trade")
-async def simulate_trade(signal_ticker: str, db: Session = Depends(get_db)):
-    """Deprecated: the manual BTC trade button is removed with the crypto strategy.
-    A weather-aware manual trade is planned for Phase 2."""
-    raise HTTPException(
-        status_code=400,
-        detail="Manual simulate-trade is unavailable: the BTC strategy was removed. "
-               "Weather manual trading is coming in Phase 2.",
-    )
 
 
 @app.post("/api/run-scan")
@@ -903,7 +807,6 @@ async def reset_bot(db: Session = Depends(get_db)):
             state.total_pnl = 0.0
             state.is_running = True
 
-        ai_logs_deleted = db.query(AILog).delete()
         db.commit()
 
         log_event("success", f"Bot reset: {trades_deleted} trades deleted. Fresh start with ${settings.INITIAL_BANKROLL:,.2f}")
@@ -911,7 +814,6 @@ async def reset_bot(db: Session = Depends(get_db)):
         return {
             "status": "reset",
             "trades_deleted": trades_deleted,
-            "ai_logs_deleted": ai_logs_deleted,
             "new_bankroll": settings.INITIAL_BANKROLL
         }
 
@@ -924,13 +826,6 @@ async def reset_bot(db: Session = Depends(get_db)):
 async def get_dashboard(db: Session = Depends(get_db)):
     """Get all dashboard data in one call."""
     stats = await get_stats(db)
-
-    # BTC strategy removed (Phase 1) — these fields stay in the response schema
-    # for frontend compatibility but are now empty.
-    btc_price_data = None
-    micro_data = None
-    windows = []
-    signals = []
 
     # Recent trades (with mark-to-market prices for open positions)
     trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
@@ -989,10 +884,6 @@ async def get_dashboard(db: Session = Depends(get_db)):
 
     return DashboardData(
         stats=stats,
-        btc_price=btc_price_data,
-        microstructure=micro_data,
-        windows=windows,
-        active_signals=signals,
         recent_trades=recent_trades,
         equity_curve=equity_curve,
         calibration=calibration,
@@ -1009,7 +900,7 @@ async def websocket_events(websocket: WebSocket):
         await websocket.send_json({
             "timestamp": datetime.utcnow().isoformat(),
             "type": "success",
-            "message": "Connected to BTC trading bot"
+            "message": "Connected to weather trading bot"
         })
 
         from backend.core.scheduler import get_recent_events

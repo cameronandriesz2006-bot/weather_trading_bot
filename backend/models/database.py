@@ -52,16 +52,6 @@ class Trade(Base):
     edge_at_entry = Column(Float)
 
 
-class BtcPriceSnapshot(Base):
-    """Cached BTC prices for momentum calculation."""
-    __tablename__ = "btc_price_snapshots"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    price = Column(Float)
-    source = Column(String, default="coingecko")
-
-
 class BotState(Base):
     """Bot state and statistics."""
     __tablename__ = "bot_state"
@@ -113,51 +103,6 @@ class Signal(Base):
     outcome_correct = Column(Boolean, nullable=True)   # did our direction prediction match?
     settlement_value = Column(Float, nullable=True)     # 1.0=UP won, 0.0=DOWN won
     settled_at = Column(DateTime, nullable=True)        # when we recorded the outcome
-
-
-class AILog(Base):
-    """Log of all AI API calls."""
-    __tablename__ = "ai_logs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    timestamp = Column(DateTime, default=datetime.utcnow, index=True)
-    provider = Column(String, index=True)
-    model = Column(String)
-
-    prompt = Column(String)
-    response = Column(String)
-    call_type = Column(String, index=True)
-
-    latency_ms = Column(Float)
-    tokens_used = Column(Integer)
-    cost_usd = Column(Float)
-
-    related_market = Column(String, nullable=True)
-    success = Column(Boolean, default=True)
-    error = Column(String, nullable=True)
-
-
-class ScanLog(Base):
-    """Log of each market scan run."""
-    __tablename__ = "scan_logs"
-
-    id = Column(Integer, primary_key=True, index=True)
-    run_id = Column(String, unique=True, index=True)
-    started_at = Column(DateTime, default=datetime.utcnow)
-    completed_at = Column(DateTime, nullable=True)
-
-    categories_scanned = Column(JSON)
-    platforms_scanned = Column(JSON)
-
-    markets_found = Column(Integer, default=0)
-    signals_generated = Column(Integer, default=0)
-    trades_executed = Column(Integer, default=0)
-
-    ai_calls_made = Column(Integer, default=0)
-    ai_cost_usd = Column(Float, default=0.0)
-
-    success = Column(Boolean, default=True)
-    error = Column(String, nullable=True)
 
 
 def init_db():
