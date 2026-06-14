@@ -345,9 +345,14 @@ class EnsembleForecast:
         return max(frac, 1 - frac)
 
 
-# Simple cache: (city_key, target_date_str) -> (timestamp, EnsembleForecast)
+# Simple cache: (city_key, target_date_str) -> (timestamp, EnsembleForecast-or-None)
+# Failures are cached too, briefly, so a single API error (e.g. a 429 rate-limit)
+# does NOT cascade into one re-fetch per bucket (~280/scan) that hammers the API
+# and never recovers. Successful forecasts are held for _CACHE_TTL; failures only
+# for _FAIL_TTL, so a recovered API is retried within the minute.
 _forecast_cache: Dict[str, tuple] = {}
-_CACHE_TTL = 900  # 15 minutes
+_CACHE_TTL = 900       # 15 minutes (successful forecast)
+_FAIL_TTL = 60         # 1 minute (negative cache for a failed fetch)
 
 
 def _celsius_to_fahrenheit(c: float) -> float:
@@ -373,7 +378,9 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
     now = time.time()
     if cache_key in _forecast_cache:
         cached_time, cached_forecast = _forecast_cache[cache_key]
-        if now - cached_time < _CACHE_TTL:
+        # Held longer when it succeeded, only briefly when it failed (negative cache).
+        ttl = _CACHE_TTL if cached_forecast is not None else _FAIL_TTL
+        if now - cached_time < ttl:
             return cached_forecast
 
     city = CITY_CONFIG[city_key]
@@ -424,6 +431,7 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
 
             if not member_highs:
                 logger.warning(f"No ensemble data for {city_key} on {target_date}")
+                _forecast_cache[cache_key] = (now, None)   # negative cache
                 return None
 
             forecast = EnsembleForecast(
@@ -444,6 +452,7 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
 
     except Exception as e:
         logger.warning(f"Failed to fetch ensemble forecast for {city_key}: {e}")
+        _forecast_cache[cache_key] = (now, None)   # negative cache: don't re-hammer
         return None
 
 
