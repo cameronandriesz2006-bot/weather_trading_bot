@@ -15,13 +15,14 @@ to spend), so the primary helper walks the asks for a target cash amount.
 """
 import logging
 from dataclasses import dataclass
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import httpx
 
 logger = logging.getLogger("trading_bot")
 
 CLOB_BOOK_URL = "https://clob.polymarket.com/book"
+CLOB_BOOKS_URL = "https://clob.polymarket.com/books"   # batch: POST [{"token_id":...}]
 
 
 @dataclass
@@ -45,17 +46,40 @@ class BookTop:
     mid: float                  # (bid+ask)/2, or the one side present
 
 
+@dataclass
+class LiveBook:
+    """A token's full live book: top-of-book plus the ask ladder for walking."""
+    top: BookTop
+    asks: List[Tuple[float, float]]   # (price, size) sorted cheapest-first
+
+
+def _top_from_levels(bids, asks) -> Optional[BookTop]:
+    """Build a BookTop from raw bid/ask level lists, or None if both empty."""
+    best_bid = max((p for p, _ in _parse_levels(bids)), default=None)
+    best_ask = min((p for p, _ in _parse_levels(asks)), default=None)
+    if best_bid is not None and best_ask is not None:
+        mid = (best_bid + best_ask) / 2
+    elif best_bid is not None:
+        mid = best_bid
+    elif best_ask is not None:
+        mid = best_ask
+    else:
+        return None
+    return BookTop(best_bid=best_bid, best_ask=best_ask, mid=mid)
+
+
 async def fetch_book_top(
     token_id: str, client: httpx.AsyncClient
 ) -> Optional[BookTop]:
     """
-    Fetch the live top of book (best bid/ask + mid) for a CLOB token.
+    Fetch the live top of book (best bid/ask + mid) for a single CLOB token.
 
     Use this for mark-to-market display: Gamma's cached ``outcomePrices`` /
     ``bestBid`` / ``bestAsk`` fields can be badly stale on thin daily-temperature
     markets (observed ~20c off), so the live CLOB book is the only trustworthy
     "current price". Returns None if the book can't be read or is empty on both
-    sides, so callers can fall back.
+    sides, so callers can fall back. For many tokens at once use
+    ``fetch_books`` (one batched request) instead of looping this.
     """
     if not token_id:
         return None
@@ -64,22 +88,51 @@ async def fetch_book_top(
         if r.status_code != 200:
             return None
         data = r.json()
-        bids = _parse_levels(data.get("bids"))
-        asks = _parse_levels(data.get("asks"))
-        best_bid = max((p for p, _ in bids), default=None)
-        best_ask = min((p for p, _ in asks), default=None)
-        if best_bid is not None and best_ask is not None:
-            mid = (best_bid + best_ask) / 2
-        elif best_bid is not None:
-            mid = best_bid
-        elif best_ask is not None:
-            mid = best_ask
-        else:
-            return None
-        return BookTop(best_bid=best_bid, best_ask=best_ask, mid=mid)
+        return _top_from_levels(data.get("bids"), data.get("asks"))
     except Exception as e:
         logger.debug(f"Order-book top fetch failed for token {token_id}: {e}")
         return None
+
+
+async def fetch_books(
+    token_ids: List[str], client: httpx.AsyncClient, chunk_size: int = 200
+) -> Dict[str, LiveBook]:
+    """
+    Fetch FULL live books for MANY tokens via the CLOB batch endpoint.
+
+    Looping the single-token endpoint over hundreds of tokens is ~one HTTP
+    round-trip each and gets rate-limited (a full weather scan measured ~50s).
+    ``POST /books`` returns all requested books in one response (keyed by
+    ``asset_id``), each with the complete bid/ask ladders — so a whole scan's
+    worth of tokens is a handful of requests. The returned ``LiveBook`` carries
+    both the top-of-book (for the edge screen / mark-to-market) AND the sorted ask
+    ladder (for the exact fill walk), so a scan needs NO per-candidate fetches.
+    Tokens whose book is missing/empty are simply absent, so callers fall back to
+    their existing (Gamma) values.
+    """
+    out: Dict[str, LiveBook] = {}
+    ids = [t for t in token_ids if t]
+    for i in range(0, len(ids), chunk_size):
+        chunk = ids[i:i + chunk_size]
+        try:
+            r = await client.post(CLOB_BOOKS_URL, json=[{"token_id": t} for t in chunk])
+            if r.status_code != 200:
+                logger.debug(f"Batch /books returned {r.status_code} for {len(chunk)} tokens")
+                continue
+            for b in r.json() or []:
+                tid = b.get("asset_id")
+                if not tid:
+                    continue
+                top = _top_from_levels(b.get("bids"), b.get("asks"))
+                if top is None:
+                    continue
+                asks = _parse_levels(b.get("asks"))
+                asks.sort(key=lambda x: x[0])   # cheapest first — fill order
+                out[tid] = LiveBook(top=top, asks=asks)
+        except Exception as e:
+            logger.debug(f"Batch book fetch failed for a chunk of {len(chunk)}: {e}")
+            continue
+    return out
 
 
 def _parse_levels(raw) -> List[Tuple[float, float]]:

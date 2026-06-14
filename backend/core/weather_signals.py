@@ -3,7 +3,7 @@ import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 import httpx
 
@@ -11,7 +11,9 @@ from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
 from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
-from backend.data.orderbook import fetch_ask_levels, walk_asks_for_cash
+from backend.data.orderbook import (
+    fetch_ask_levels, walk_asks_for_cash, fetch_book_top, fetch_books, LiveBook,
+)
 from backend.models.database import SessionLocal, Signal
 
 logger = logging.getLogger("trading_bot")
@@ -64,10 +66,61 @@ class WeatherTradingSignal:
         )
 
 
+def _apply_live_top(market: WeatherMarket, top) -> bool:
+    """Overwrite the market's Gamma-sourced PRICE fields from a live CLOB BookTop.
+
+    Gamma's ``outcomePrices``/``bestBid``/``bestAsk`` can be ~20c stale on thin
+    daily-temperature markets, and those fields feed the edge SCREEN — so a stale
+    mid can hide a genuine edge and the bucket would never get walked (a missed
+    opportunity). We refresh from the YES token's live top-of-book; the NO side is
+    the book's mirror (handled downstream). Only fast-moving PRICE fields are
+    touched — ``liquidity``/``volume`` stay as Gamma's slower-moving aggregates.
+    Only applies a clean two-sided quote; otherwise leaves Gamma values untouched,
+    so this can only help, never break the scan. Returns True if it mutated.
+    """
+    if not top or top.best_bid is None or top.best_ask is None:
+        return False
+    bid, ask = top.best_bid, top.best_ask
+    if not (0.0 < bid < ask < 1.0):
+        return False
+    market.best_bid = bid
+    market.best_ask = ask
+    market.spread = round(ask - bid, 4)
+    market.yes_price = round(top.mid, 4)
+    market.no_price = round(1.0 - top.mid, 4)
+    return True
+
+
+async def _refresh_market_prices_live(
+    market: WeatherMarket, book_client: Optional[httpx.AsyncClient]
+) -> None:
+    """Single-market live-price refresh (for standalone callers).
+
+    The scan refreshes all markets in one batched request (see
+    ``scan_for_weather_signals``); this per-market path is for callers that score
+    one market on its own. Fetches the YES token's live top-of-book and applies it.
+    """
+    token = market.token_id_yes
+    if not token:
+        return
+    try:
+        if book_client is not None:
+            top = await fetch_book_top(token, book_client)
+        else:
+            async with httpx.AsyncClient(timeout=8.0) as client:
+                top = await fetch_book_top(token, client)
+    except Exception as e:
+        logger.debug(f"Live price refresh failed for {market.market_id}: {e}")
+        return
+    _apply_live_top(market, top)
+
+
 async def generate_weather_signal(
     market: WeatherMarket,
     bankroll: Optional[float] = None,
     book_client: Optional[httpx.AsyncClient] = None,
+    refresh_prices: bool = True,
+    books: Optional[Dict[str, LiveBook]] = None,
 ) -> Optional[WeatherTradingSignal]:
     """
     Generate a trading signal for a weather temperature market.
@@ -94,6 +147,13 @@ async def generate_weather_signal(
     # Light clip only to keep Kelly's odds math finite; do NOT inflate genuinely
     # tiny bucket probabilities (that would manufacture fake edges on dead buckets).
     model_yes_prob = max(0.01, min(0.99, model_yes_prob))
+
+    # Screen on LIVE prices: refresh the market's price fields from the CLOB book
+    # before computing the edge, so a stale Gamma mid can't hide a real edge. In
+    # the scan this is already done in one batched request up front, so it's
+    # skipped here (refresh_prices=False); standalone callers refresh per-market.
+    if refresh_prices:
+        await _refresh_market_prices_live(market, book_client)
 
     market_yes_prob = market.yes_price
 
@@ -170,17 +230,22 @@ async def generate_weather_signal(
     token_id = market.token_id_yes if direction == "yes" else market.token_id_no
     if net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD and suggested_size > 0 and token_id:
         asks = None
-        try:
-            # Reuse the scan's shared (pooled) client when provided — opening a
-            # fresh AsyncClient per bucket means a fresh TLS handshake each time,
-            # which gets throttled and made a scan ~9s instead of <1s.
-            if book_client is not None:
-                asks = await fetch_ask_levels(token_id, book_client)
-            else:
-                async with httpx.AsyncClient(timeout=8.0) as client:
-                    asks = await fetch_ask_levels(token_id, client)
-        except Exception as e:
-            logger.debug(f"Order-book walk failed for {market.market_id}: {e}")
+        # Prefer the pre-fetched batched book (the scan fetches every token's full
+        # book in a few /books requests, so candidates need NO extra round-trip).
+        if books is not None and token_id in books:
+            asks = books[token_id].asks
+        else:
+            try:
+                # Standalone fallback: reuse the pooled client if provided —
+                # a fresh AsyncClient per bucket means a fresh TLS handshake each
+                # time, which gets throttled and made a scan ~9s instead of <1s.
+                if book_client is not None:
+                    asks = await fetch_ask_levels(token_id, book_client)
+                else:
+                    async with httpx.AsyncClient(timeout=8.0) as client:
+                        asks = await fetch_ask_levels(token_id, client)
+            except Exception as e:
+                logger.debug(f"Order-book walk failed for {market.market_id}: {e}")
         if asks:
             fill = walk_asks_for_cash(asks, suggested_size)
             if fill and fill.contracts > 0:
@@ -329,11 +394,30 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     async with httpx.AsyncClient(
         timeout=8.0, limits=httpx.Limits(max_connections=20, max_keepalive_connections=20)
     ) as book_client:
+        # Fetch every market's FULL live book up front in a few batched /books
+        # requests (both YES and NO tokens — NO-side candidates walk the NO book).
+        # This serves BOTH the edge screen (live mids, not Gamma's stale
+        # outcomePrices) AND the exact-fill walk, so the per-bucket pass needs zero
+        # extra round-trips. Per-token fetches were ~280+ requests (~50s, rate-
+        # limited); batched it's ~3 requests (~2s).
+        books: Dict[str, LiveBook] = {}
+        try:
+            token_ids = [t for m in markets for t in (m.token_id_yes, m.token_id_no) if t]
+            books = await fetch_books(token_ids, book_client)
+            refreshed = sum(
+                _apply_live_top(m, books[m.token_id_yes].top)
+                for m in markets if m.token_id_yes in books
+            )
+            logger.info(f"Live prices: refreshed {refreshed}/{len(markets)} markets from CLOB book")
+        except Exception as e:
+            logger.warning(f"Batch live-price refresh failed, using Gamma prices: {e}")
+
         async def _gen(market: WeatherMarket) -> Optional[WeatherTradingSignal]:
             async with sem:
                 try:
                     return await generate_weather_signal(
-                        market, bankroll=bankroll, book_client=book_client
+                        market, bankroll=bankroll, book_client=book_client,
+                        refresh_prices=False, books=books,
                     )
                 except Exception as e:
                     logger.debug(f"Weather signal generation failed for {market.title}: {e}")

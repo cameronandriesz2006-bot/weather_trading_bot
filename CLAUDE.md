@@ -72,12 +72,19 @@ and read the scoreboard.
   marks each side at its live CLOB **mid** (`orderbook.fetch_book_top`), falling back to Gamma
   `outcomePrices` only if the book is unavailable. (This is the same reason the signal generator
   already walks the live book for fills — issue 7.)
-- **NEW known issue (deferred): the scan's ENTRY edge screen still uses the stale Gamma mid.**
-  `weather_markets.py` reads `yes_price`/`no_price` from Gamma `outcomePrices` for the initial
-  edge calc; only *candidates* get corrected by walking the live CLOB. So a stale Gamma price can
-  (a) flag a false candidate that the walk then filters (safe, wasteful) or (b) **hide a real edge
-  so the bucket is never walked (missed opportunity)**. Fix later by sourcing the screen price from
-  the live book too. Thin markets — exactly where the volume gate bites — are where this is worst.
+- **Entry edge screen now uses the LIVE book too — DONE.** Previously the screen read
+  `yes_price`/`no_price` from Gamma `outcomePrices` and only *candidates* got the live-book walk,
+  so a stale Gamma mid could hide a real edge and the bucket was never walked. Now the scan fetches
+  every market's **full live book up front** via the CLOB **batch `POST /books`** endpoint
+  (`orderbook.fetch_books` → `LiveBook{top, asks}`) and refreshes each market's price fields
+  (`_apply_live_top`) before the edge screen. The same pre-fetched books feed the exact-fill walk,
+  so the per-bucket pass needs **zero extra round-trips**. Performance: a naive per-token refresh
+  was ~280 requests (~50s, rate-limited); batched it's ~3 requests (~0.7s), warm-cache scan ~2.2s.
+  Effect: actionable rose ~13→~19 (real edges Gamma's stale prices were hiding). `generate_weather_signal`
+  gained `refresh_prices` (scan passes `False`, having batch-refreshed) and `books` (the pre-fetched
+  dict); standalone callers still refresh per-market via `_refresh_market_prices_live`.
+  *Aside (pre-existing, untouched):* a cold process pays ~45s once for the **sequential** Open-Meteo
+  forecast pre-warm; it's cached warm thereafter. Could be made concurrent later — separate issue.
 
 - **Scoreboard reset.** All old trades + signals deleted (they were placed by the
   pre-gate / pre-bias / contract-count model and would pollute the test); bankroll back to
