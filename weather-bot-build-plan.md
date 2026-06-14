@@ -166,6 +166,16 @@ just multiplies confident nonsense across more markets. Listed biggest-first:
    price that. A model that conditions on observed-so-far can be near-certain and
    low-risk. If the edge lives anywhere, it's most likely here — treat it as a priority.
 
+   *Status (2026-06-14):* **half built, second half spec'd and ready.** (a) The
+   observed-so-far **floor/ceiling** is DONE — the bot won't bet on outcomes already ruled
+   out (CLAUDE.md issue 14). (b) The **intraday σ schedule** — letting the forecast's doubt
+   shrink through the day instead of a flat 2° — is the next build: the data is already
+   computed and validated (`backend/data/intraday_backtest.py` → `intraday_curve.json`,
+   cross-checked against resolved Polymarket outcomes via `source_crosscheck.py`). The full
+   implementation spec is in CLAUDE.md ("NEXT TO BUILD — intraday σ schedule"). It's an
+   offline-data-backed change: build + unit-test without the Open-Meteo quota, then
+   live-validate. Do not re-derive the numbers — they come from the backtest.
+
 3. **Tune the thresholds empirically.** The 8% edge cutoff and the 15% bet-sizing
    fraction are guesses. Once the scoreboard is honest, let it tell you the
    profit-maximizing values instead of using the defaults.

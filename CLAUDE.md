@@ -48,10 +48,11 @@ basic temperature. That's the only honest path to a real edge.
    (or the low *above* it) — but only once that extreme has actually occurred (afternoon for highs,
    late morning for lows), so a cool overnight reading can't fool it in the morning.
 
-**One known weakness still open:** the floor above handles the *locked-in* side, but the bot can still
-be over-eager about the temperature climbing *higher* than it really will once the afternoon peak has
-passed. That last piece needs the scoreboard data to fix safely (it's about *how much more* it can
-climb, which we don't want to guess). See "STILL OPEN — σ too wide on the UPPER side" below.
+**One known weakness, now with the fix in hand:** the floor above handles the *locked-in* side, but the
+bot can still be over-eager about the temperature climbing *higher* than it really will once the
+afternoon peak has passed. We've since **measured exactly how much it really climbs** (a 10-year
+backtest, validated against real settled outcomes), so this is no longer a guess — it's the next thing
+to build. See "NEXT TO BUILD — intraday σ schedule" below for the data and the full implementation spec.
 
 ## Hard constraints (do not violate)
 
@@ -139,15 +140,54 @@ wildly over-confident before the day's high had even happened (observed Chicago 
 3am vs a 71.7°F forecast → 100% on a low bucket). This is the **safe half** of intraday conditioning:
 it bounds the side that's already determined, using only a hard fact.
 
-#### STILL OPEN — σ too wide on the UPPER side near settlement (needs data)
-The floor fixes the *lower* side. The remaining mirage is the *upper* side: our forecast still thinks
-the high will climb further than it will once the peak has passed — e.g. Hong Kong 29°C late
-afternoon, forecast mean 30.7°C vs an observed-so-far 29.3°C that won't rise much more, so we wrongly
-bet NO on 29°C. The floor can't bound this (it's above the observed), and the mean-gap guardrail
-misses it when our mean matches the market's *implied* mean but our *shape* is wrong. Fixing it =
-modelling "how much higher can it still climb in the hours left," which shrinks σ as the day ends —
-the **tunable** part that needs the scoreboard. **Do NOT blind-tune σ.** Top forecast lever once data
-is in (Phase 5/7+ intraday conditioning).
+#### NEXT TO BUILD — intraday σ schedule (data is ready; spec below)
+**Problem (recap).** Our forecast carries a flat minimum doubt (`WEATHER_SIGMA_FLOOR_F` = 2.0°F,
+scaled 1/1.8 for °C). The backtest proved that's wrong in BOTH directions: at 7am the real
+uncertainty in NYC's high is ±4.9°F (bot is secretly OVER-confident), and by 6pm it's ±0.3°F (bot is
+far too UNSURE — the "won't commit when the high is locked in" case). The observed-floor already fixed
+the *lower* side; this fixes the *spread* so the bot's confidence tracks reality through the day.
+
+**The data is built and validated (do NOT re-derive it):**
+- `backend/data/intraday_curve.json` — per city, per metric (high/low), per LOCAL hour: `{mean, std, n}`
+  of `(final daily extreme − extreme so far)`, in the city's NATIVE unit, from 10y of Meteostat hourly
+  obs (~1,530 summer days/city). **The `std` is the residual uncertainty at that hour** — exactly the σ
+  to use. Rebuild with `python -m backend.data.intraday_backtest` (offline; no Open-Meteo quota).
+- Validated against ground truth: `python -m backend.data.source_crosscheck` (Meteostat vs 554 resolved
+  Polymarket buckets) — sources agree to within ~0.5° rounding for 8/10 cities. **The curve is
+  offset-invariant** (it's a *relative* move), so small per-station offsets don't corrupt it.
+
+**Implementation spec (one change; gate it; unit-test without the quota):**
+1. **Loader.** In `weather.py`, load `intraday_curve.json` like `station_bias.json` (cached + a
+   `reload_*` for fresh files). Helper `intraday_sigma(city_key, metric, local_hour) -> Optional[float]`
+   returns `curve[city][metric][str(hour)]["std"]` in native unit, or `None` if absent (Shanghai has no
+   curve; missing hours).
+2. **Where it plugs in.** `EnsembleForecast._effective_sigma` currently returns
+   `max(raw*INFLATION, FLOOR) + lead_days*PER_LEAD_DAY`. Add: **only on the in-progress local day**
+   (`target_date == station-local today`, same condition the observed-floor uses), look up
+   `intraday_sigma(city, metric, local_hour)`; if present, use `sigma_eff = max(WEATHER_INTRADAY_SIGMA_MIN,
+   intraday_std)` and SKIP the flat-floor/inflation term (the curve is the empirical truth there; lead
+   term is 0 on the in-progress day anyway). For future days or when the curve is missing, keep the
+   existing formula unchanged. `_effective_sigma` will need `metric` + the local hour — thread them in
+   (the prob fns already know `metric`; compute local hour the SAME way as the floor, ideally via the
+   real station tz rather than the longitude approximation — consider storing tz in `CITY_CONFIG`).
+3. **Per-metric.** Highs and lows have DIFFERENT curves (lows lock late — min can fall at either end of
+   the day). Use the high curve for high markets, low curve for low markets. Already keyed by metric.
+4. **Config.** Add `WEATHER_INTRADAY_SIGMA_ENABLED` (gate; default False until live-validated) and
+   `WEATHER_INTRADAY_SIGMA_MIN_F` (≈0.3°F, scaled for °C) — a hard minimum so σ can never collapse to ~0
+   and turn a tiny edge into an enormous Kelly bet. THIS MIN IS A KEY SAFETY RAIL.
+5. **Interplay (leave these in place):** the observed-floor still censors below; the market-gap
+   guardrail still catches mean disagreements. The curve only narrows the *spread*. Together: floor sets
+   the ≥ bound, curve sets the width, guardrail vetoes if our center is off.
+6. **Tests** (`test_forecast_distribution.py`, no network): build a forecast, feed a local hour, assert
+   `_effective_sigma` ≈ the curve std at that hour and that it SHRINKS morning→evening; assert future
+   days still use the old σ; assert the `_MIN` floor holds; assert a missing-curve city falls back.
+
+**Caveats to respect:** curve is SUMMER-calibrated (months 5–9) — re-run with matching months if the
+season shifts. HK/Miami carry a small absolute offset (curve still valid; only their floor's absolute
+level is a touch soft, which errs safe). Shanghai has no curve → flat-floor fallback. After building,
+**live-validate when the quota is back**: evening highs should become confident, mornings should stay
+appropriately unsure, and watch that bet sizes don't blow up (the `_MIN` rail). Do NOT hand-tune the
+numbers — they come from the backtest.
 
 ### Latest changes (2026-06-14, second pass)
 - **Min traded-volume gate — DONE.** Added `WEATHER_MIN_VOLUME` ($500) to
