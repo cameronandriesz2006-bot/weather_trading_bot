@@ -42,6 +42,57 @@ serves a React dashboard.
 
 Re-run the scoreboard after every change. One change at a time, always keep it running.
 
+## Current state (2026-06-14)
+
+Model-correctness + cost work (Phases 1–7) is done. We are now in **Phase 7
+(run-and-evaluate)**: the scoreboard was **reset to a clean slate** so it contains only
+**current-model** trades (liquidity/spread-gated, bias-corrected, cash-staked). Let it run
+and read the scoreboard.
+
+- **Scoreboard reset.** All old trades + signals deleted (they were placed by the
+  pre-gate / pre-bias / contract-count model and would pollute the test); bankroll back to
+  $10k. A check showed 9 of the old 10 trades would be rejected by the current gates.
+- **Exposure scaled up for faster data:** `WEATHER_MAX_ALLOCATION` $500→**$2,000** (~20% of
+  bankroll; covers all actionable opportunities); `DAILY_LOSS_LIMIT` $300→**$750** in step so
+  the breaker doesn't stall data collection. `MAX_TRADE_SIZE` $75 and `KELLY_FRACTION` 0.10
+  unchanged. `MAX_TRADES_PER_SCAN`=3 (hard-coded throttle; only paces the ramp).
+- **Pending (small):** the dashboard "Open positions" sub-label still hard-codes "/$500" — make
+  it read the real cap from the API (was mid-change when this was written: add the cap to the
+  stats/dashboard response and use it in `App.tsx`).
+- **Next big lever (discussed, NOT started): international cities.** Seoul/Tokyo/London/HK/Paris/
+  Shanghai have **2–3× the liquidity** of the US markets, and Open-Meteo forecasts them for free —
+  BUT they price in **°C** while the bot assumes **°F**. Main work = Celsius unit handling (parser
+  + conversion + rounding is ±0.5°C not ±0.5°F + sigma config units) and per-city settlement
+  stations; everything else (signals, sizing, P&L, dashboard, bias backfill) is reusable.
+
+### Dashboard — REBUILT (weather-only, clean & spacious)
+The old dense BTC-era dashboard was replaced. Frontend components now: `ScanView` (dropdown →
+one event's bucket table + bias-corrected forecast header + Polymarket links + top-opportunities
+strip; held buckets marked "holding"), `TradesPanel` (Active/Settled dropdown; Active shows
+mark-to-market "Now" price + unrealized P&L + "Settles in"; Settled shows result/P&L/when),
+`Scoreboard` (win rate, Brier, calibration), `LiveLog` (collapsible event log). **Deleted:**
+SignalsTable, WeatherPanel, GlobeView, EdgeDistribution, MicrostructurePanel, EquityChart,
+CalibrationPanel, Terminal, FilterBar, StatsCards. `WeatherSignalResponse` + `TradeResponse`
+were extended with the fields the UI needs (slug, bucket_label, low/high_f, net_edge,
+entry_price, cost, rel_spread, liquidity, bias, current_price, unrealized_pnl, city/metric/
+target_date, settlement_time). `Trade` gained a `bucket_label` column (+ a one-off
+`backend/data/backfill_trade_buckets.py` to fill old rows).
+
+### Other recent fixes (post-Phase-6)
+- **P&L = cash-staked** (see issue 6 sizing note): loss = full stake (`-size`), win = net odds
+  (`size*(1-p)/p`). Old settled trades were re-graded. Tests: `tests/test_pnl.py`.
+- **Trade loop no longer freezes:** it used `actionable[:3]` then skipped held markets, so once
+  the top-3 by edge were all held it placed nothing and never reached the rest. Now it scans the
+  whole actionable list and places up to `MAX_TRADES_PER_SCAN` *new* (non-held) trades.
+- **Signal persistence deduped:** one row per market per UTC day (was a new row every 5-min scan
+  ≈ 22k/day); the row updates in place, then freezes once executed.
+- **Timezone display:** backend logs/timestamps are UTC without a 'Z'; the frontend now tags
+  tz-less timestamps as UTC (`asUtc` in `LiveLog`/`TradesPanel`) so the live log + settled
+  "X ago" render in local time.
+- **"Actionable now" excludes held markets** (headline count, opportunities strip, dropdown count).
+- **Mark-to-market:** open positions show the live side price + unrealized P&L (`_current_side_prices`
+  in `api/main.py`, 30s server-side cache).
+
 ## Key bugs / known issues
 
 1. **Scoreboard label mismatch (LINCHPIN, Phase 2) — FIXED.** Weather signals store
@@ -142,8 +193,6 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
 ### Minor cleanup (catch along the way)
 - `database.py ensure_schema()` swallows schema-migration errors silently — make it log
   loudly (matters when adding the fee column in Phase 6). **(done)**
-- `database.py ensure_schema()` swallows schema-migration errors silently — make it log
-  loudly (matters when adding the fee column in Phase 6).
 - Date parser assumes current year when a title omits it — wrong-year risk near New Year.
 - Weather exposure cap ($500) is hard-coded in the scheduler, not in config — move it.
   **(done — now `config.WEATHER_MAX_ALLOCATION`, enforced per-trade)**
@@ -165,7 +214,8 @@ Re-run the scoreboard after every change. One change at a time, always keep it r
 - **Rebuild:** `data/weather.py` (multi-model, calibrated, station-correct),
   `data/weather_markets.py` (robust range handling).
 - **Deleted (Phase 1):** `crypto.py`, `btc_markets.py`, `markets.py`.
-- **Keep:** all frontend (display only).
+- **Frontend: REBUILT** (no longer "display only / keep as-is"). See the "Dashboard — REBUILT"
+  note above for the current components and the 10 deleted ones.
 
 ## Architecture quick map
 
