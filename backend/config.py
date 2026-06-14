@@ -153,6 +153,16 @@ class Settings(BaseSettings):
     WEATHER_MARKET_GAP_ENABLED: bool = True
     WEATHER_MAX_MARKET_GAP_F: float = 2.0
     WEATHER_MARKET_GAP_MIN_BUCKETS: int = 3   # need this many finite buckets to trust the implied mean
+    # The gap tolerance is NOT flat. Once the intraday schedule sharpens our forecast
+    # (small sigma), a 2°F disagreement with the market would put our probability on
+    # the WRONG bucket — so the allowed gap scales with our effective sigma:
+    #   gap_threshold = clamp(SIGMA_K * sigma_eff, MIN, MAX_MARKET_GAP_F)
+    # MIN stops it collapsing so tight that a fraction-of-a-degree thermometer
+    # difference suppresses everything (0.5°F still sits inside one 2°F bucket); MAX
+    # preserves the original behaviour when we are genuinely unsure (mornings).
+    # Both MIN/SIGMA_K are °F-defined and scaled by 1/1.8 for °C cities.
+    WEATHER_MIN_MARKET_GAP_F: float = 0.5
+    WEATHER_MARKET_GAP_SIGMA_K: float = 2.0
 
     class Config:
         env_file = ".env"

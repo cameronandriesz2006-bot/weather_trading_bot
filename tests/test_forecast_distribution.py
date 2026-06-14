@@ -98,7 +98,7 @@ def test_observed_ceiling_for_lows():
 # flat σ-floor; future days and missing-curve cities keep the old formula; a hard
 # _MIN rail keeps σ from collapsing to ~0.
 from backend.data.weather import (  # noqa: E402
-    intraday_sigma, reload_intraday_curve, station_local_hour, station_local_now,
+    intraday_sigma, intraday_drift, reload_intraday_curve, station_local_hour, station_local_now,
 )
 
 reload_intraday_curve()  # load the on-disk curve the asserts below read
@@ -194,6 +194,86 @@ def test_station_local_hour_gate():
     today_local = station_local_now("nyc").date()
     h = station_local_hour("nyc", today_local)
     assert isinstance(h, int) and 0 <= h <= 23, h
+
+
+# --- Observed-anchored center (Fix A: F4) + confidence-scaled gap (Fix B: F3) ----
+# Near settlement the distribution's CENTER anchors on observed-so-far + the curve's
+# empirical drift, not the stale forecast (so a hot/cold forecast can't be priced
+# with high evening confidence on a value that can no longer happen). And the market-
+# gap tolerance scales with σ so a sharpened forecast can't sit on the wrong bucket.
+
+def test_pricing_center_anchors_on_observed_plus_drift():
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True)
+    try:
+        fc = _fc([85.0] * 31)                       # forecast mean 85 (bias disabled here)
+        drift18 = intraday_drift("nyc", "high", 18)
+        assert drift18 is not None
+        # Evening, the day has already hit 90 -> center anchors on reality, not 85.
+        center = fc.pricing_center("high", local_hour=18, observed=90.0)
+        assert abs(center - (90.0 + drift18)) < 1e-9, center
+        assert abs(center - fc.corrected_mean("high")) > 1.0   # clearly NOT the forecast mean
+    finally:
+        _restore(old)
+
+
+def test_pricing_center_without_observation_or_hour_uses_forecast_mean():
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True)
+    try:
+        fc = _fc([85.0] * 31)
+        # Morning before the gate (no observed value yet) -> forecast mean.
+        assert abs(fc.pricing_center("high", local_hour=18, observed=None)
+                   - fc.corrected_mean("high")) < 1e-9
+        # Future day (no local hour) even WITH an observation -> forecast mean.
+        assert abs(fc.pricing_center("high", local_hour=None, observed=90.0)
+                   - fc.corrected_mean("high")) < 1e-9
+    finally:
+        _restore(old)
+
+
+def test_pricing_center_disabled_uses_forecast_mean():
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=False)
+    try:
+        fc = _fc([85.0] * 31)
+        assert abs(fc.pricing_center("high", local_hour=18, observed=90.0)
+                   - fc.corrected_mean("high")) < 1e-9
+    finally:
+        _restore(old)
+
+
+def test_gap_threshold_tightens_as_sigma_sharpens():
+    """Confidence-scaled gap tolerance: capped at MAX when σ is large (morning),
+    tighter toward MIN when σ collapses (evening), never below MIN."""
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True, WEATHER_INTRADAY_SIGMA_MIN_F=0.3)
+    try:
+        fc = _fc([85.0] * 31)
+
+        def thr(hour):   # mirrors the clamp in generate_weather_signal (°F -> scale 1)
+            s = fc.effective_sigma_for("high", hour)
+            return min(settings.WEATHER_MAX_MARKET_GAP_F,
+                       max(settings.WEATHER_MIN_MARKET_GAP_F,
+                           settings.WEATHER_MARKET_GAP_SIGMA_K * s))
+
+        morning, evening = thr(7), thr(18)
+        assert morning == settings.WEATHER_MAX_MARKET_GAP_F    # σ huge -> capped at MAX
+        assert evening < morning                               # σ small -> tighter
+        assert evening >= settings.WEATHER_MIN_MARKET_GAP_F    # never below MIN
+    finally:
+        _restore(old)
+
+
+def test_market_gap_ok_uses_stored_threshold():
+    from backend.core.weather_signals import WeatherTradingSignal
+
+    class _M:          # minimal stand-in for a WeatherMarket
+        unit = "F"
+
+    assert WeatherTradingSignal(market=_M(), market_gap=1.5,
+                                market_gap_threshold=0.6).market_gap_ok is False
+    assert WeatherTradingSignal(market=_M(), market_gap=0.4,
+                                market_gap_threshold=0.6).market_gap_ok is True
+    # No stored threshold -> falls back to the absolute 2.0°F cap.
+    assert WeatherTradingSignal(market=_M(), market_gap=1.5,
+                                market_gap_threshold=None).market_gap_ok is True
 
 
 if __name__ == "__main__":

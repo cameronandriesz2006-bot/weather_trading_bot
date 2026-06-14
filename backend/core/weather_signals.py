@@ -54,17 +54,23 @@ class WeatherTradingSignal:
     ensemble_std: float = 0.0
     ensemble_members: int = 0
 
-    # Market-gap guardrail: |our corrected forecast mean - market-implied mean| in
-    # native unit (None if the event lacked enough buckets to compute it).
+    # Market-gap guardrail: |our pricing center - market-implied mean| in native unit
+    # (None if the event lacked enough buckets to compute it), plus the confidence-
+    # scaled tolerance it was checked against (set by the generator so this property
+    # stays consistent with what was priced).
     market_gap: Optional[float] = None
+    market_gap_threshold: Optional[float] = None
 
     @property
     def market_gap_ok(self) -> bool:
-        """True if our forecast mean is close enough to the market-implied mean to
-        trust our edge. A large gap means WE are likely miscalibrated (wrong station
-        / uncorrected bias), so the edge is a mirage — suppress the whole event."""
+        """True if our pricing center is close enough to the market-implied mean to
+        trust our edge. The tolerance tightens as our forecast sharpens (see the
+        generator): once σ is small, even a ~2° disagreement puts our mass on the
+        wrong bucket, so a large gap means WE are likely miscalibrated — suppress."""
         if not settings.WEATHER_MARKET_GAP_ENABLED or self.market_gap is None:
             return True
+        if self.market_gap_threshold is not None:
+            return self.market_gap <= self.market_gap_threshold
         scale = (1.0 / 1.8) if getattr(self.market, "unit", "F") == "C" else 1.0
         return self.market_gap <= settings.WEATHER_MAX_MARKET_GAP_F * scale
 
@@ -336,12 +342,18 @@ async def generate_weather_signal(
     std_val = forecast.std_high if market.metric == "high" else forecast.std_low
     bias = get_station_bias(market.city_key, market.metric)
     u = forecast.unit  # "F" or "C" — display in the market's native unit
+    # The center we actually price on. On the in-progress local day past the gate this
+    # ANCHORS on observed-so-far + empirical drift (reality), not the stale forecast,
+    # so the (now narrow) evening confidence can't sit on a value that can't happen.
+    center_val = forecast.pricing_center(market.metric, local_hour=local_hour, observed=observed_bound)
     ensemble_str = f"{mean_val:.1f}{u}"
     if abs(bias) >= 0.05:
         ensemble_str = f"{mean_val:.1f}{u} (bias {bias:+.1f} -> {mean_val - bias:.1f}{u})"
     if observed_bound is not None:
         kind = "floor" if market.metric == "high" else "ceil"
         ensemble_str += f" [obs {kind} {observed_bound:.1f}{u}]"
+    if abs(center_val - (mean_val - bias)) > 1e-6:
+        ensemble_str += f" [nowcast {center_val:.1f}{u}]"
     # Show the intraday sigma when the schedule is engaged (in-progress local day,
     # curve present) — so live-validation can watch evening highs get confident and
     # mornings stay appropriately unsure. ASCII only: this string is logged and stored,
@@ -351,11 +363,21 @@ async def generate_weather_signal(
         if isig is not None:
             ensemble_str += f" [sigma {isig:.1f}{u} @{local_hour}h local]"
 
-    # Market-gap guardrail: how far our (bias-corrected) mean sits from the market-
-    # implied mean for this event. A large gap => we're likely the miscalibrated one.
-    corrected_mean_val = mean_val - bias
+    # Market-gap guardrail: how far our PRICING CENTER sits from the market-implied
+    # mean for this event. A large gap => we're likely the miscalibrated one. The
+    # tolerance scales with our confidence: when the intraday schedule has sharpened
+    # σ, a 2° disagreement would put our mass on the wrong bucket, so the allowed gap
+    # shrinks toward σ (bounded [MIN, MAX]); when we're genuinely unsure it stays at
+    # the original cap.
+    corrected_mean_val = center_val
+    scale = (1.0 / 1.8) if u == "C" else 1.0
+    sigma_eff = forecast.effective_sigma_for(market.metric, local_hour)
+    gap_threshold = min(
+        settings.WEATHER_MAX_MARKET_GAP_F * scale,
+        max(settings.WEATHER_MIN_MARKET_GAP_F * scale,
+            settings.WEATHER_MARKET_GAP_SIGMA_K * sigma_eff),
+    )
     market_gap = None
-    gap_threshold = settings.WEATHER_MAX_MARKET_GAP_F * ((1.0 / 1.8) if u == "C" else 1.0)
     if settings.WEATHER_MARKET_GAP_ENABLED and market.event_market_mean is not None:
         market_gap = abs(corrected_mean_val - market.event_market_mean)
     market_gap_ok = market_gap is None or market_gap <= gap_threshold
@@ -421,6 +443,7 @@ async def generate_weather_signal(
         ensemble_std=std_val,
         ensemble_members=forecast.num_members,
         market_gap=market_gap,
+        market_gap_threshold=gap_threshold,
     )
 
 

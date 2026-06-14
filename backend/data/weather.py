@@ -249,6 +249,22 @@ def intraday_sigma(city_key: str, metric: str, local_hour: int) -> Optional[floa
     return float(std) if std is not None else None
 
 
+def intraday_drift(city_key: str, metric: str, local_hour: int) -> Optional[float]:
+    """Empirical MEAN remaining move (native unit) in the daily ``metric`` extreme at
+    this station-LOCAL ``hour`` — how much further the high is still expected to rise
+    (>= 0) or the low to fall (<= 0), on average, from what's been seen so far. The
+    companion to ``intraday_sigma``, used to ANCHOR the in-progress-day center on
+    observed-so-far + this drift. None when absent (Shanghai / missing hour)."""
+    metric_curve = _load_intraday_curve().get(city_key, {}).get(metric)
+    if not isinstance(metric_curve, dict):
+        return None
+    entry = metric_curve.get(str(local_hour))
+    if not entry:
+        return None
+    mean = entry.get("mean")
+    return float(mean) if mean is not None else None
+
+
 @dataclass
 class EnsembleForecast:
     """Ensemble weather forecast with per-member data."""
@@ -405,6 +421,35 @@ class EnsembleForecast:
         raw = self.mean_high if metric == "high" else self.mean_low
         return raw - get_station_bias(self.city_key, metric)
 
+    def effective_sigma_for(self, metric: str, local_hour: Optional[int] = None) -> float:
+        """Public accessor for the effective forecast sigma for ``metric`` at a given
+        station-local hour (the same sigma the bucket integral uses). Lets callers —
+        e.g. the market-gap guardrail — scale their tolerance to our confidence."""
+        raw = self.std_high if metric == "high" else self.std_low
+        return self._effective_sigma(raw, metric=metric, local_hour=local_hour)
+
+    def pricing_center(self, metric: str, local_hour: Optional[int] = None,
+                       observed: Optional[float] = None) -> float:
+        """The CENTER the distribution is priced on.
+
+        Off the in-progress day (or when an observation / curve is missing) this is the
+        bias-corrected forecast mean. On the in-progress LOCAL day, once the day's
+        extreme has been observed so far, we ANCHOR on reality instead of the stale
+        forecast: center = observed-so-far + the empirical remaining drift (the curve
+        MEAN at this hour). The observed bound alone only stops the final extreme
+        finishing past it on ONE side; without this, a forecast that ran hot (or cold)
+        would be priced with high evening confidence on a value that can no longer
+        happen. Anchoring fixes both sides; the market-gap guardrail still vetoes if
+        the resulting center is far from the market."""
+        from backend.config import settings
+        base = self.corrected_mean(metric)
+        if (settings.WEATHER_INTRADAY_SIGMA_ENABLED and local_hour is not None
+                and observed is not None):
+            drift = intraday_drift(self.city_key, metric, local_hour)
+            if drift is not None:
+                return observed + drift
+        return base
+
     def probability_high_in_range(self, low_f: Optional[float], high_f: Optional[float],
                                   floor: Optional[float] = None,
                                   local_hour: Optional[int] = None) -> float:
@@ -413,7 +458,8 @@ class EnsembleForecast:
         ``local_hour`` (station-local, in-progress day only) engages the intraday σ curve."""
         if not self.member_highs:
             return 0.5
-        return self._fitted_bucket_prob(self.corrected_mean("high"), self.std_high,
+        center = self.pricing_center("high", local_hour=local_hour, observed=floor)
+        return self._fitted_bucket_prob(center, self.std_high,
                                         low_f, high_f, floor=floor,
                                         metric="high", local_hour=local_hour)
 
@@ -425,7 +471,8 @@ class EnsembleForecast:
         ``local_hour`` (station-local, in-progress day only) engages the intraday σ curve."""
         if not self.member_lows:
             return 0.5
-        return self._fitted_bucket_prob(self.corrected_mean("low"), self.std_low,
+        center = self.pricing_center("low", local_hour=local_hour, observed=ceiling)
+        return self._fitted_bucket_prob(center, self.std_low,
                                         low_f, high_f, ceiling=ceiling,
                                         metric="low", local_hour=local_hour)
 
