@@ -679,9 +679,10 @@ async def get_weather_signals():
         return []
 
     try:
-        from backend.core.weather_signals import scan_for_weather_signals
+        from backend.core.weather_signals import get_cached_signals
 
-        signals = await scan_for_weather_signals()
+        # Serve the latest scheduled scan (instant); never trigger a scan per request.
+        signals = get_cached_signals()
         return [_weather_signal_to_response(s) for s in signals]
     except Exception:
         return []
@@ -957,17 +958,20 @@ async def get_dashboard(db: Session = Depends(get_db)):
     weather_forecasts_data = []
     if settings.WEATHER_ENABLED:
         try:
-            from backend.core.weather_signals import scan_for_weather_signals
+            from backend.core.weather_signals import get_cached_signals
             from backend.data.weather import fetch_ensemble_forecast, CITY_CONFIG
 
-            wx_signals = await scan_for_weather_signals()
+            # Serve the LATEST scheduled scan (instant), never run a scan per page
+            # load — a live scan is tens of seconds and was hanging the dashboard.
+            wx_signals = get_cached_signals()
             weather_signals_data = [_weather_signal_to_response(s) for s in wx_signals]
 
             city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
             for city_key in city_keys:
                 if city_key not in CITY_CONFIG:
                     continue
-                forecast = await fetch_ensemble_forecast(city_key)
+                # cache_only: never block the dashboard on the forecast API.
+                forecast = await fetch_ensemble_forecast(city_key, cache_only=True)
                 if forecast:
                     weather_forecasts_data.append(WeatherForecastResponse(
                         city_key=forecast.city_key,

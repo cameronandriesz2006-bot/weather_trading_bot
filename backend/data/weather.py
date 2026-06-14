@@ -359,13 +359,17 @@ def _celsius_to_fahrenheit(c: float) -> float:
     return c * 9.0 / 5.0 + 32.0
 
 
-async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = None) -> Optional[EnsembleForecast]:
+async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = None,
+                                  cache_only: bool = False) -> Optional[EnsembleForecast]:
     """
     Fetch ensemble forecast from Open-Meteo Ensemble API (free, 31-member GFS).
 
     Returns per-member daily max/min temperatures in the city's NATIVE unit
     (Fahrenheit for US markets, Celsius for the international ones) — matching the
     unit the market resolves in, so no conversion is ever needed downstream.
+
+    cache_only=True returns the cached forecast (or None) WITHOUT any network call —
+    for read-only paths like the dashboard that must never block on the API.
     """
     if city_key not in CITY_CONFIG:
         logger.warning(f"Unknown city key: {city_key}")
@@ -382,6 +386,9 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
         ttl = _CACHE_TTL if cached_forecast is not None else _FAIL_TTL
         if now - cached_time < ttl:
             return cached_forecast
+
+    if cache_only:
+        return None  # no fresh cache entry and caller forbids a network fetch
 
     city = CITY_CONFIG[city_key]
     unit = city.get("unit", "F")

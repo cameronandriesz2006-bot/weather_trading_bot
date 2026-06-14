@@ -535,7 +535,25 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     # Persist signals to DB
     _persist_weather_signals(signals)
 
+    # Cache the latest scan so read-only callers (the dashboard / API) can serve it
+    # INSTANTLY instead of re-running a full scan per request (forecasts + order
+    # books = tens of seconds, which was hanging the dashboard's loading screen).
+    global _last_scan_signals, _last_scan_at
+    _last_scan_signals = signals
+    _last_scan_at = datetime.utcnow()
+
     return signals
+
+
+# Latest scan result, for read-only API endpoints. The scheduler refreshes it
+# every WEATHER_SCAN_INTERVAL; endpoints should READ this, never trigger a scan.
+_last_scan_signals: List["WeatherTradingSignal"] = []
+_last_scan_at: Optional[datetime] = None
+
+
+def get_cached_signals() -> List["WeatherTradingSignal"]:
+    """The most recent scan's signals (may be empty before the first scan)."""
+    return _last_scan_signals
 
 
 def _persist_weather_signals(signals: list):
