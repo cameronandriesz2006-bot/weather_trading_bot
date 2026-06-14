@@ -56,3 +56,4 @@ logs/
 htmlcov/
 .pytest_cache/
 *.pem
+backend/data/backtest_cache/
