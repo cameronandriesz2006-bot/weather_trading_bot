@@ -351,8 +351,8 @@ async def get_stats(db: Session = Depends(get_db)):
         is_running=state.is_running,
         last_run=state.last_run,
         settled_trades=settled_trades,
-        weather_max_allocation=settings.WEATHER_MAX_ALLOCATION,
-        daily_loss_limit=settings.DAILY_LOSS_LIMIT,
+        weather_max_allocation=settings.WEATHER_MAX_ALLOCATION_FRACTION * state.bankroll,
+        daily_loss_limit=settings.DAILY_LOSS_LIMIT_FRACTION * state.bankroll,
         daily_pnl=float(daily_pnl),
     )
 

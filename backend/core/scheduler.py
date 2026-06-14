@@ -85,8 +85,10 @@ async def weather_scan_and_trade_job():
                 return
 
             MAX_TRADES_PER_SCAN = 3
-            MIN_TRADE_SIZE = 10
-            max_allocation = settings.WEATHER_MAX_ALLOCATION  # max open weather exposure
+            # Sizing/exposure limits are fractions of the LIVE bankroll (so they scale
+            # at any bankroll size — see config). Compute the dollar equivalents off it.
+            min_trade_size = settings.WEATHER_MIN_TRADE_FRACTION * state.bankroll
+            max_allocation = settings.WEATHER_MAX_ALLOCATION_FRACTION * state.bankroll  # max open weather exposure
 
             # Track remaining room under the allocation cap; we enforce it per
             # trade below so total open exposure never overshoots the cap.
@@ -96,7 +98,7 @@ async def weather_scan_and_trade_job():
             ).scalar()
             remaining_allocation = max_allocation - weather_pending
 
-            if remaining_allocation < MIN_TRADE_SIZE:
+            if remaining_allocation < min_trade_size:
                 log_event("info", f"Weather allocation full: ${weather_pending:.0f}/${max_allocation:.0f}")
                 return
 
@@ -106,9 +108,10 @@ async def weather_scan_and_trade_job():
                 Trade.settled == True,
                 Trade.settlement_time >= today_start,
             ).scalar()
-            if daily_pnl <= -settings.DAILY_LOSS_LIMIT:
+            daily_loss_limit = settings.DAILY_LOSS_LIMIT_FRACTION * state.bankroll
+            if daily_pnl <= -daily_loss_limit:
                 log_event("warning",
-                    f"Daily loss limit hit: ${daily_pnl:.2f} (limit: -${settings.DAILY_LOSS_LIMIT:.0f}). "
+                    f"Daily loss limit hit: ${daily_pnl:.2f} (limit: -${daily_loss_limit:.0f}). "
                     f"Stopping weather trades.")
                 return
 
@@ -131,18 +134,19 @@ async def weather_scan_and_trade_job():
                 if existing:
                     continue
 
-                trade_size = min(signal.suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
-                trade_size = max(trade_size, MIN_TRADE_SIZE)
+                # suggested_size is already capped to KELLY_MAX_TRADE_FRACTION of the
+                # live bankroll in the signal generator; just enforce the minimum stake.
+                trade_size = max(signal.suggested_size, min_trade_size)
 
                 # Hard allocation ceiling: never let open weather exposure exceed
                 # the cap. Trim to the remaining room; stop if there's no room left.
-                if remaining_allocation < MIN_TRADE_SIZE:
+                if remaining_allocation < min_trade_size:
                     log_event("info", f"Weather allocation full: ${max_allocation - remaining_allocation:.0f}/${max_allocation:.0f}")
                     break
                 if trade_size > remaining_allocation:
                     trade_size = remaining_allocation
 
-                if state.bankroll < MIN_TRADE_SIZE:
+                if state.bankroll < min_trade_size:
                     log_event("warning", f"Bankroll too low: ${state.bankroll:.2f}")
                     break
 

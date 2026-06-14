@@ -160,8 +160,8 @@ All settings in `backend/config.py`, overridable via environment variables:
 | `SCAN_INTERVAL_SECONDS` | 60 | BTC scan frequency |
 | `MIN_EDGE_THRESHOLD` | 0.02 | Minimum edge (2%) |
 | `MAX_ENTRY_PRICE` | 0.55 | Max entry price (55c) |
-| `MAX_TRADE_SIZE` | 75.0 | Max $ per BTC trade |
-| `KELLY_FRACTION` | 0.15 | Fractional Kelly multiplier |
+| `KELLY_FRACTION` | 0.10 | Fractional Kelly multiplier |
+| `KELLY_MAX_TRADE_FRACTION` | 0.05 | Max stake on a single bet, as a fraction of the live bankroll (5%) |
 
 ### Kalshi Settings
 | Setting | Default | Description |
@@ -177,13 +177,14 @@ All settings in `backend/config.py`, overridable via environment variables:
 | `WEATHER_SCAN_INTERVAL_SECONDS` | 300 | Weather scan frequency (5 min) |
 | `WEATHER_MIN_EDGE_THRESHOLD` | 0.08 | Minimum edge (8%) |
 | `WEATHER_MAX_ENTRY_PRICE` | 0.70 | Max entry price (70c) |
-| `WEATHER_MAX_TRADE_SIZE` | 100.0 | Max $ per weather trade |
-| `WEATHER_CITIES` | nyc,chicago,miami,los_angeles,denver | Cities to track |
+| `WEATHER_MAX_ALLOCATION_FRACTION` | 0.20 | Max open weather exposure, as a fraction of bankroll (20%) |
+| `WEATHER_MIN_TRADE_FRACTION` | 0.001 | Minimum stake per trade, as a fraction of bankroll (0.1%) |
+| `WEATHER_CITIES` | nyc,chicago,miami,los_angeles,denver,london,tokyo,seoul,paris,shanghai,hong_kong | Cities to track |
 
 ### Risk Management
 | Setting | Default | Description |
 |---------|---------|-------------|
-| `DAILY_LOSS_LIMIT` | 300.0 | Daily loss circuit breaker |
+| `DAILY_LOSS_LIMIT_FRACTION` | 0.075 | Daily loss circuit breaker, as a fraction of bankroll (7.5%) |
 | `MAX_TOTAL_PENDING_TRADES` | 20 | Max open positions |
 | `INITIAL_BANKROLL` | 10000.0 | Starting paper bankroll |
 

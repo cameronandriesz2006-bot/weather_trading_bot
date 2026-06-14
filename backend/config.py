@@ -35,13 +35,22 @@ class Settings(BaseSettings):
     # (Phase 4) probabilities we no longer need the aggressive fraction, and
     # smaller bets are safer until the scoreboard proves an edge. Tune empirically.
     KELLY_FRACTION: float = 0.10
+    # Per-trade ceiling as a FRACTION OF THE LIVE BANKROLL (relative, so it scales at
+    # any bankroll — the sim runs at $10k but the live account will be smaller). This is
+    # now the SINGLE per-trade cap: it replaces the old fixed $75/$100 dollar caps that
+    # were clamping essentially every Kelly bet to the same size regardless of edge or
+    # confidence. The Kelly helper sizes each bet off the live bankroll and then clamps
+    # the fraction here, so a bigger-edge / more-confident bet genuinely takes a larger
+    # stake right up to this ceiling, and only the very strongest bets clip at it.
+    KELLY_MAX_TRADE_FRACTION: float = 0.05    # <= 5% of bankroll on any single bet
 
     # Settlement cadence (shared — settles all trade types)
     SETTLEMENT_INTERVAL_SECONDS: int = 120
 
-    # Risk management
-    DAILY_LOSS_LIMIT: float = 750.0
-    MAX_TRADE_SIZE: float = 75.0  # Per-trade hard cap inside the Kelly helper
+    # Risk management. Limits are FRACTIONS OF THE LIVE BANKROLL (not fixed dollars) so
+    # they scale at any bankroll. (The per-trade sizing cap lives with
+    # KELLY_MAX_TRADE_FRACTION above; total weather exposure / min trade are below.)
+    DAILY_LOSS_LIMIT_FRACTION: float = 0.075   # halt trading for the day after losing this share of bankroll (~$750 @ $10k)
     MAX_TOTAL_PENDING_TRADES: int = 20
 
     # Weather trading settings
@@ -50,7 +59,6 @@ class Settings(BaseSettings):
     WEATHER_SETTLEMENT_INTERVAL_SECONDS: int = 1800  # 30 min
     WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% minimum edge to trade
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
-    WEATHER_MAX_TRADE_SIZE: float = 100.0
     # US markets resolve in °F; the international markets resolve in °C (handled
     # natively per-city — see CITY_CONFIG "unit" in backend/data/weather.py). The
     # international books carry ~2-3x the liquidity of the US weather markets.
@@ -83,10 +91,14 @@ class Settings(BaseSettings):
     # we additionally require the market to have actually traded this much.
     WEATHER_MIN_VOLUME: float = 500.0
 
-    # Max total exposure to OPEN (unsettled) weather positions at once. Enforced
-    # as a hard ceiling per trade so it never overshoots (was a hard-coded $500 in
-    # the scheduler, checked only once per scan -> it could blow past to ~$600).
-    WEATHER_MAX_ALLOCATION: float = 2000.0
+    # Max total exposure to OPEN (unsettled) weather positions at once, and the minimum
+    # stake for a single trade — both FRACTIONS OF THE LIVE BANKROLL so they scale at any
+    # bankroll. The allocation cap is enforced as a hard per-trade ceiling (trim to the
+    # remaining room) so total open exposure never overshoots; trades whose natural size
+    # is below the minimum are bumped up to it (an actionable bucket is still worth a min
+    # stake). Replaces the old fixed $2,000 allocation / $10 min.
+    WEATHER_MAX_ALLOCATION_FRACTION: float = 0.20   # <= 20% of bankroll in open weather bets (~$2,000 @ $10k)
+    WEATHER_MIN_TRADE_FRACTION: float = 0.001       # min stake 0.1% of bankroll (~$10 @ $10k)
 
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the

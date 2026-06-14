@@ -69,15 +69,11 @@ def calculate_kelly_size(
     # Apply fractional Kelly
     kelly *= settings.KELLY_FRACTION
 
-    # Cap at maximum per-trade limit
-    max_fraction = 0.05  # 5% max per trade
-    kelly = min(kelly, max_fraction)
-
+    # Per-trade ceiling as a fraction of bankroll (relative, so it scales at any
+    # bankroll). This is the ONLY per-trade cap now: it lets a bigger-edge / more-
+    # confident bet take a genuinely bigger stake and clips only the strongest at the
+    # ceiling — instead of the old fixed-dollar cap that flattened every bet to one size.
+    kelly = min(kelly, settings.KELLY_MAX_TRADE_FRACTION)
     kelly = max(kelly, 0)
 
-    size = kelly * bankroll
-
-    # Hard cap from config
-    size = min(size, settings.MAX_TRADE_SIZE)
-
-    return size
+    return kelly * bankroll

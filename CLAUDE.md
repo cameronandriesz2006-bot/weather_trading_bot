@@ -211,6 +211,26 @@ level is a touch soft, which errs safe). Shanghai has no curve → flat-floor fa
 appropriately unsure, and watch that bet sizes don't blow up (the `_MIN` rail). Do NOT hand-tune the
 numbers — they come from the backtest.
 
+#### Position sizing made RELATIVE (2026-06-14) — DONE
+Every bet was entering at ~$75 regardless of confidence: the Kelly helper sizes off the live bankroll,
+but a **fixed $75 per-trade dollar cap** (`MAX_TRADE_SIZE`) sat far below what Kelly wanted on a $10k
+bankroll (typically $120–$500), so it clamped nearly every bet to the same number and erased the
+edge/confidence differentiation. Fix: all sizing/exposure limits are now **fractions of the LIVE
+bankroll** (so they scale when we go live at a smaller bankroll), and the single per-trade cap is a
+percentage, not a dollar amount:
+- `KELLY_MAX_TRADE_FRACTION` (**0.05** = 5% of bankroll) — the only per-trade cap, applied as a fraction
+  inside `calculate_kelly_size` (replaces the hard-coded `max_fraction=0.05` AND the `$75 MAX_TRADE_SIZE`).
+  Kelly now varies the stake under it (a 4× spread across edge/confidence in practice); only the
+  strongest bets clip at 5%. Removed the redundant `WEATHER_MAX_TRADE_SIZE` ($100) clamp in the signal
+  generator and scheduler.
+- `WEATHER_MAX_ALLOCATION_FRACTION` (**0.20**) and `WEATHER_MIN_TRADE_FRACTION` (**0.001**) replace the
+  fixed $2,000 / $10; `DAILY_LOSS_LIMIT_FRACTION` (**0.075**) replaces the fixed $750. The scheduler and
+  `/api/stats` compute the dollar equivalents off `state.bankroll`.
+- `KELLY_FRACTION` stays **0.10** (gentle, model still being proven). Risk levels chosen with the user.
+  Verified: sizes vary $117→$500 @ $10k and are exactly 1/10th @ $1k (same %), proving differentiation +
+  bankroll-relative scaling. Removed settings: `MAX_TRADE_SIZE`, `WEATHER_MAX_TRADE_SIZE`,
+  `WEATHER_MAX_ALLOCATION`, `DAILY_LOSS_LIMIT`.
+
 ### Latest changes (2026-06-14, second pass)
 - **Min traded-volume gate — DONE.** Added `WEATHER_MIN_VOLUME` ($500) to
   `passes_threshold` (`weather_signals.py`). **Liquidity ≠ volume:** liquidity is $ *resting*

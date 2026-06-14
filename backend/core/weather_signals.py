@@ -274,9 +274,10 @@ async def generate_weather_signal(
             direction=direction_raw,  # calculate_kelly_size expects "up"/"down"
             bankroll=bankroll,
         )
-        suggested_size = min(suggested_size, settings.WEATHER_MAX_TRADE_SIZE)
-        # Layer 2(i): never simulate taking more than a small slice of the book,
-        # so we don't pretend to fill $75 into a $200 market.
+        # Per-trade size is already capped relative to bankroll inside the Kelly helper
+        # (KELLY_MAX_TRADE_FRACTION), so no fixed-dollar clamp here. Layer 2(i): never
+        # simulate taking more than a small slice of the book, so we don't pretend to
+        # fill a large stake into a thin market.
         if market.liquidity and market.liquidity > 0:
             suggested_size = min(suggested_size, settings.WEATHER_MAX_BOOK_FRACTION * market.liquidity)
     else:
