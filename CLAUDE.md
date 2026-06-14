@@ -70,7 +70,7 @@ to build. See "NEXT TO BUILD — intraday σ schedule" below for the data and th
 | Phase | Goal | Status |
 |---|---|---|
 | 0 | Run unchanged in simulation; commit known-good baseline | done (repo runs) |
-| 1 | **Cut crypto cleanly** — extracted `calculate_edge`/`calculate_kelly_size` to `backend/core/sizing.py`; deleted `signals.py`/`crypto.py`/`btc_markets.py`/`markets.py`; removed BTC scan job; BTC endpoints now empty stubs; dropped BTC-only config | **done** |
+| 1 | **Cut crypto cleanly** — extracted `calculate_edge`/`calculate_kelly_size` to `backend/core/sizing.py`; deleted `signals.py`/`crypto.py`/`btc_markets.py`/`markets.py`; removed BTC scan job; BTC endpoints/models fully removed (2026-06-14, were empty stubs); dropped BTC-only config | **done** |
 | 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **done** |
 | 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess) | **done** (Polymarket; Kalshi structured-fields part deferred until Kalshi is enabled) |
 | 4 | Honest probability — fitted+widened distribution + lead-time uncertainty **done**; per-station bias correction **done** (historical backfill, no sim needed); climatology **deferred** (markets are 0–1 day out so climatology barely matters) | **done** |
@@ -89,6 +89,32 @@ Model-correctness + cost work (Phases 1–7) is done. We are now in **Phase 7
 (run-and-evaluate)**: the scoreboard was **reset to a clean slate** so it contains only
 **current-model** trades (liquidity/spread-gated, bias-corrected, cash-staked). Let it run
 and read the scoreboard.
+
+### Latest session (2026-06-14, current) — intraday σ ON, relative sizing, BTC/AI purge, repo moved
+- **Intraday σ schedule — built + ENABLED** (`WEATHER_INTRADAY_SIGMA_ENABLED=True`; see the
+  "Intraday σ schedule — DONE" section below). **Pending first-live-scan validation** once the
+  Open-Meteo quota is back: evening highs should get confident, mornings stay unsure, bet sizes
+  must not blow up (the `_MIN` rail). Verified offline (tests + a synthetic-forecast run).
+- **Position sizing is now RELATIVE to the live bankroll** (scales when we go live smaller). This
+  fixed the "every bet was a flat ~$75" bug — fixed-$ caps were clamping every Kelly bet to one
+  size. Per-trade ≤ `KELLY_MAX_TRADE_FRACTION` (**5%**), open exposure ≤
+  `WEATHER_MAX_ALLOCATION_FRACTION` (**20%**), min trade `WEATHER_MIN_TRADE_FRACTION` (**0.1%**),
+  daily stop `DAILY_LOSS_LIMIT_FRACTION` (**7.5%**); `KELLY_FRACTION` stays 0.10. **Removed**
+  settings: `MAX_TRADE_SIZE`, `WEATHER_MAX_TRADE_SIZE`, `WEATHER_MAX_ALLOCATION`, `DAILY_LOSS_LIMIT`.
+  Full detail in "Position sizing made RELATIVE" below.
+- **Dead-code purge of forked BTC/crypto + AI scaffolding.** Deleted `backend/ai/` (unused
+  Claude/Groq hooks), the `AILog`/`ScanLog`/`BtcPriceSnapshot` tables, ALL BTC/crypto API
+  endpoints + response models + the btc fields in the dashboard schema, the frontend BTC
+  types/fetchers, and the stale dashboard screenshot. **DB tables are now only
+  `trades`/`signals`/`bot_state`.** Verified: backend imports + full test suite pass, frontend
+  typechecks clean. Kept (NOT dead): `kalshi_*` (deferred), the research `.md` docs.
+- **Repo moved.** `origin` → **github.com/cameronandriesz2006-bot/weather_trading_bot** (pushes
+  authenticate as the `cameronandriesz2006-bot` account). Previous repo kept locally as `old-origin`
+  (orionpeptidelab-cyber/polymarket-kalshi-weather-bot). History was scrubbed of an upstream-author
+  Mapbox secret token (so all commit IDs changed) to pass GitHub push-protection.
+- **Unchanged & safe:** `SIMULATION_MODE` is still `True`. The one pre-existing failing test
+  (`tests/test_weather_markets.py` — a stale "Tokyo untracked" assertion) predates this session and
+  is unrelated to the bot's operation.
 
 ### Forecast-calibration work (2026-06-14, third pass)
 The bot was producing many large (20-40%) edges that were **mostly mirages that would LOSE**:
@@ -271,7 +297,9 @@ percentage, not a dollar amount:
 - **Scoreboard reset.** All old trades + signals deleted (they were placed by the
   pre-gate / pre-bias / contract-count model and would pollute the test); bankroll back to
   $10k. A check showed 9 of the old 10 trades would be rejected by the current gates.
-- **Exposure scaled up for faster data:** `WEATHER_MAX_ALLOCATION` $500→**$2,000** (~20% of
+- **Exposure scaled up for faster data:** _(SUPERSEDED 2026-06-14 — these fixed-$ knobs are gone;
+  sizing/exposure are now FRACTIONS of the live bankroll. See "Position sizing made RELATIVE".)_
+  `WEATHER_MAX_ALLOCATION` $500→**$2,000** (~20% of
   bankroll; covers all actionable opportunities); `DAILY_LOSS_LIMIT` $300→**$750** in step so
   the breaker doesn't stall data collection. `MAX_TRADE_SIZE` $75 and `KELLY_FRACTION` 0.10
   unchanged. `MAX_TRADES_PER_SCAN`=3 (hard-coded throttle; only paces the ramp).
@@ -453,11 +481,12 @@ target_date, settlement_time). `Trade` gained a `bucket_label` column (+ a one-o
   loudly (matters when adding the fee column in Phase 6). **(done)**
 - Date parser assumes current year when a title omits it — wrong-year risk near New Year.
 - Weather exposure cap ($500) is hard-coded in the scheduler, not in config — move it.
-  **(done — now `config.WEATHER_MAX_ALLOCATION`, enforced per-trade)**
-- Dead weight: unused `ScanLog` table, an uncalled Groq/AI hook in the weather path, a
-  configured-but-unscheduled weather-settlement timer. NOTE: the "unused observed-temp
-  function" (`fetch_nws_observed_temperature`) is NOT dead weight — keep it; it's the
-  data source for the deferred per-station **bias correction** (forecast vs. actual).
+  **(done — now `config.WEATHER_MAX_ALLOCATION_FRACTION`, a fraction of the live bankroll,
+  enforced per-trade; see "Latest session" / "Position sizing made RELATIVE")**
+- Dead weight: unused `ScanLog` table + the uncalled Groq/AI hook **(REMOVED 2026-06-14 — `backend/ai/`
+  and the `AILog`/`ScanLog`/`BtcPriceSnapshot` tables are deleted; see "Latest session" above)**. NOTE:
+  the "unused observed-temp function" (`fetch_nws_observed_temperature`) is NOT dead weight — keep it;
+  it's the data source for the deferred per-station **bias correction** (forecast vs. actual).
 - Verify the Kalshi base URL in `kalshi_client.py` is current (lower priority; Kalshi is
   region-blocked).
 
@@ -485,7 +514,8 @@ target_date, settlement_time). `Trade` gained a `bucket_label` column (+ a one-o
 - `backend/data/weather.py` — Open-Meteo ensemble + NWS observations + `CITY_CONFIG`.
 - `backend/data/weather_markets.py` — Polymarket weather market fetcher/parser.
 - `backend/data/kalshi_markets.py` / `kalshi_client.py` — Kalshi fetch + RSA-PSS auth.
-- `backend/models/database.py` — SQLAlchemy models (`Trade`, `Signal`, `BotState`, ...).
+- `backend/models/database.py` — SQLAlchemy models (`Trade`, `Signal`, `BotState` only; the
+  BTC/AI tables `AILog`/`ScanLog`/`BtcPriceSnapshot` were removed 2026-06-14).
 
 ## Working agreement
 
