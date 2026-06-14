@@ -84,6 +84,10 @@ export interface BotStats {
   total_pnl: number
   is_running: boolean
   last_run: string | null
+  settled_trades?: number
+  weather_max_allocation?: number
+  daily_loss_limit?: number
+  daily_pnl?: number
 }
 
 export interface EquityPoint {
@@ -135,6 +139,7 @@ export interface WeatherSignal {
   // Dashboard redesign: exact market identity + cost-aware economics
   slug?: string
   bucket_label?: string
+  unit?: string            // "F" (US) or "C" (international)
   low_f?: number | null
   high_f?: number | null
   net_edge?: number

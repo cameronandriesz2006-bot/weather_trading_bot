@@ -53,6 +53,13 @@ function App() {
     is_running: false, last_run: null, total_trades: 0, total_pnl: 0,
     bankroll: 10000, winning_trades: 0, win_rate: 0,
   }
+  const allocationCap = stats.weather_max_allocation ?? 2000
+  const dailyLossLimit = stats.daily_loss_limit ?? 750
+  // daily_pnl is today's realized P&L; loss used toward the breaker is its
+  // negative part (the breaker trips at -dailyLossLimit).
+  const dailyPnl = stats.daily_pnl ?? 0
+  const dailyLossUsed = dailyPnl < 0 ? -dailyPnl : 0
+  const breakerHit = dailyLossUsed >= dailyLossLimit
 
   const openTrades = recentTrades.filter(t => !t.settled)
   const openExposure = openTrades.reduce((a, t) => a + (t.size || 0), 0)
@@ -130,8 +137,14 @@ function App() {
         <div className="flex flex-wrap gap-3">
           <StatCard label="Bankroll" value={`$${stats.bankroll.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
           <StatCard label="Total P&L" value={`${stats.total_pnl >= 0 ? '+' : ''}$${stats.total_pnl.toFixed(0)}`} tone={stats.total_pnl >= 0 ? 'pos' : 'neg'} />
-          <StatCard label="Win rate" value={`${winRatePct.toFixed(0)}%`} sub={`${stats.winning_trades}/${stats.total_trades} settled`} />
-          <StatCard label="Open positions" value={`${openTrades.length}`} sub={`$${openExposure.toFixed(0)} / $500 cap`} />
+          <StatCard label="Win rate" value={`${winRatePct.toFixed(0)}%`} sub={`${stats.winning_trades}/${stats.settled_trades ?? 0} settled`} />
+          <StatCard label="Open positions" value={`${openTrades.length}`} sub={`$${openExposure.toFixed(0)} / $${allocationCap.toLocaleString(undefined, { maximumFractionDigits: 0 })} cap`} />
+          <StatCard
+            label="Daily loss"
+            value={`$${dailyLossUsed.toFixed(0)} / $${dailyLossLimit.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
+            sub={breakerHit ? 'limit hit — trading paused' : `today's P&L ${dailyPnl >= 0 ? '+' : ''}$${dailyPnl.toFixed(0)}`}
+            tone={breakerHit ? 'neg' : dailyLossUsed > 0 ? 'neg' : 'neutral'}
+          />
           <StatCard label="Actionable now" value={`${actionableCount}`} sub={`of ${weatherSignals.length} scanned`} />
         </div>
 

@@ -16,6 +16,13 @@ logger = logging.getLogger("trading_bot")
 # (Polymarket daily-temperature markets, per their resolution descriptions), not
 # the city centre — airport vs downtown can differ by several degrees. The forecast
 # must target the settlement station to be comparable to the resolved value.
+#
+# "unit" is the NATIVE unit the market prices/resolves in: US markets resolve in
+# Fahrenheit (whole-degree, 2-degree buckets like "82-83°F"); the international
+# markets resolve in Celsius (single-degree buckets like "18°C"). We forecast and
+# price each city ENTIRELY in its native unit — no temperature is ever converted,
+# so there is no conversion error to make. Polymarket settles from its own market
+# outcome (price-based), so the unit never enters settlement either.
 # NOTE: Kalshi may settle on different stations; verify separately before enabling it.
 CITY_CONFIG: Dict[str, dict] = {
     "nyc": {
@@ -24,6 +31,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lat": 40.7792,
         "lon": -73.8800,
         "nws_station": "KLGA",
+        "unit": "F",
     },
     "chicago": {
         "name": "Chicago",
@@ -31,6 +39,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lat": 41.9950,
         "lon": -87.9336,
         "nws_station": "KORD",
+        "unit": "F",
     },
     "miami": {
         "name": "Miami",
@@ -38,6 +47,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lat": 25.7906,
         "lon": -80.3164,
         "nws_station": "KMIA",
+        "unit": "F",
     },
     "los_angeles": {
         "name": "Los Angeles",
@@ -45,6 +55,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lat": 33.9381,
         "lon": -118.3889,
         "nws_station": "KLAX",
+        "unit": "F",
     },
     "denver": {
         "name": "Denver",
@@ -52,6 +63,60 @@ CITY_CONFIG: Dict[str, dict] = {
         "lat": 39.7172,
         "lon": -104.7517,
         "nws_station": "KBKF",
+        "unit": "F",
+    },
+    # --- International cities (resolve in °C; high-liquidity books) --------------
+    # Coordinates are the exact settlement station named in each market's
+    # Polymarket resolution description. Open-Meteo snaps to its nearest grid cell,
+    # and timezone=auto aggregates the high/low over the station's LOCAL day.
+    "london": {
+        "name": "London",
+        # London City Airport (EGLC) — Wunderground.
+        "lat": 51.5048,
+        "lon": 0.0495,
+        "nws_station": None,
+        "unit": "C",
+    },
+    "tokyo": {
+        "name": "Tokyo",
+        # Tokyo Haneda Airport (RJTT) — Wunderground.
+        "lat": 35.5523,
+        "lon": 139.7816,
+        "nws_station": None,
+        "unit": "C",
+    },
+    "seoul": {
+        "name": "Seoul",
+        # Seoul market settles on Incheon Intl Airport (RKSI), NOT central Seoul.
+        "lat": 37.4692,
+        "lon": 126.4505,
+        "nws_station": None,
+        "unit": "C",
+    },
+    "paris": {
+        "name": "Paris",
+        # Paris-Le Bourget Airport (LFPB) — Wunderground.
+        "lat": 48.9694,
+        "lon": 2.4414,
+        "nws_station": None,
+        "unit": "C",
+    },
+    "shanghai": {
+        "name": "Shanghai",
+        # Shanghai Pudong Intl Airport (ZSPD) — Wunderground.
+        "lat": 31.1443,
+        "lon": 121.8083,
+        "nws_station": None,
+        "unit": "C",
+    },
+    "hong_kong": {
+        "name": "Hong Kong",
+        # Hong Kong Observatory HQ (Tsim Sha Tsui) — resolves on the HKO
+        # "Absolute Daily Max (deg. C)", NOT an airport.
+        "lat": 22.3019,
+        "lon": 114.1742,
+        "nws_station": None,
+        "unit": "C",
     },
 }
 
@@ -104,8 +169,9 @@ class EnsembleForecast:
     city_key: str
     city_name: str
     target_date: date
-    member_highs: List[float]  # Daily max temps (F) per ensemble member
-    member_lows: List[float]   # Daily min temps (F) per ensemble member
+    member_highs: List[float]  # Daily max temps per member, in `unit`
+    member_lows: List[float]   # Daily min temps per member, in `unit`
+    unit: str = "F"            # native unit of every temperature here ("F" or "C")
     mean_high: float = 0.0
     std_high: float = 0.0
     mean_low: float = 0.0
@@ -173,11 +239,20 @@ class EnsembleForecast:
         Widen the (under-dispersed) ensemble spread into an honest forecast sigma.
 
         sigma_eff = max(raw_sigma * INFLATION, FLOOR) + lead_days * PER_LEAD_DAY
+
+        The FLOOR / PER_LEAD_DAY config constants are expressed in °F. For a °C
+        market every temperature here (raw_sigma included) is already in °C, so we
+        scale those two constants by 1/1.8 — the exact unit conversion for a
+        temperature *spread* (a difference, so no +32 offset). INFLATION is a unit-
+        less multiplier and is not scaled.
         """
         from backend.config import settings
-        base = max(raw_sigma * settings.WEATHER_SIGMA_INFLATION, settings.WEATHER_SIGMA_FLOOR_F)
+        scale = (1.0 / 1.8) if self.unit == "C" else 1.0
+        floor = settings.WEATHER_SIGMA_FLOOR_F * scale
+        per_lead_day = settings.WEATHER_SIGMA_PER_LEAD_DAY_F * scale
+        base = max(raw_sigma * settings.WEATHER_SIGMA_INFLATION, floor)
         lead_days = max(0, (self.target_date - date.today()).days)
-        return base + lead_days * settings.WEATHER_SIGMA_PER_LEAD_DAY_F
+        return base + lead_days * per_lead_day
 
     def _fitted_bucket_prob(self, mean: float, raw_sigma: float,
                             low_f: Optional[float], high_f: Optional[float]) -> float:
@@ -234,7 +309,10 @@ def _celsius_to_fahrenheit(c: float) -> float:
 async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = None) -> Optional[EnsembleForecast]:
     """
     Fetch ensemble forecast from Open-Meteo Ensemble API (free, 31-member GFS).
-    Returns per-member daily max/min temperatures in Fahrenheit.
+
+    Returns per-member daily max/min temperatures in the city's NATIVE unit
+    (Fahrenheit for US markets, Celsius for the international ones) — matching the
+    unit the market resolves in, so no conversion is ever needed downstream.
     """
     if city_key not in CITY_CONFIG:
         logger.warning(f"Unknown city key: {city_key}")
@@ -251,6 +329,8 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
             return cached_forecast
 
     city = CITY_CONFIG[city_key]
+    unit = city.get("unit", "F")
+    api_temp_unit = "celsius" if unit == "C" else "fahrenheit"
 
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -259,7 +339,7 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
                 "latitude": city["lat"],
                 "longitude": city["lon"],
                 "daily": "temperature_2m_max,temperature_2m_min",
-                "temperature_unit": "fahrenheit",
+                "temperature_unit": api_temp_unit,
                 "start_date": target_date.isoformat(),
                 "end_date": target_date.isoformat(),
                 "models": "gfs_seamless",
@@ -304,11 +384,12 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
                 target_date=target_date,
                 member_highs=member_highs,
                 member_lows=member_lows,
+                unit=unit,
             )
 
             _forecast_cache[cache_key] = (now, forecast)
             logger.info(f"Ensemble forecast for {city['name']} on {target_date}: "
-                        f"High {forecast.mean_high:.1f}F +/- {forecast.std_high:.1f}F "
+                        f"High {forecast.mean_high:.1f}{unit} +/- {forecast.std_high:.1f}{unit} "
                         f"({forecast.num_members} members)")
 
             return forecast

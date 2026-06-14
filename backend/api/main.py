@@ -145,6 +145,13 @@ class BotStats(BaseModel):
     total_pnl: float
     is_running: bool
     last_run: Optional[datetime]
+    settled_trades: int = 0   # number of trades that have actually resolved
+    # Risk / sizing context for the dashboard (read from config so the UI never
+    # hard-codes the cap). daily_pnl is today's REALIZED P&L (UTC day); the
+    # circuit breaker stops weather trading once it hits -daily_loss_limit.
+    weather_max_allocation: float = 0.0
+    daily_loss_limit: float = 0.0
+    daily_pnl: float = 0.0
 
 
 class CalibrationBucket(BaseModel):
@@ -211,7 +218,8 @@ class WeatherSignalResponse(BaseModel):
     actionable: bool = False
     # Identify the exact market + the cost-aware economics (dashboard redesign).
     slug: str = ""                      # event slug -> https://polymarket.com/event/<slug>
-    bucket_label: str = ""              # the real range, e.g. "88-89°F"
+    bucket_label: str = ""              # the real range, e.g. "88-89°F" or "18°C"
+    unit: str = "F"                     # native unit of this market ("F" US, "C" intl)
     low_f: Optional[float] = None
     high_f: Optional[float] = None
     net_edge: float = 0.0               # edge after costs (what we gate/size on)
@@ -316,11 +324,23 @@ async def health():
 
 @app.get("/api/stats", response_model=BotStats)
 async def get_stats(db: Session = Depends(get_db)):
+    from sqlalchemy import func
+
     state = db.query(BotState).first()
     if not state:
         raise HTTPException(status_code=404, detail="Bot state not initialized")
 
-    win_rate = state.winning_trades / state.total_trades if state.total_trades > 0 else 0
+    # Win rate is over RESOLVED trades only — dividing by total_trades (which
+    # includes still-open positions) understates it while trades are pending.
+    settled_trades = db.query(Trade).filter(Trade.settled == True).count()
+    win_rate = state.winning_trades / settled_trades if settled_trades > 0 else 0
+
+    # Today's realized P&L (UTC day) — same window the circuit breaker uses.
+    today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
+    daily_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
+        Trade.settled == True,
+        Trade.settlement_time >= today_start,
+    ).scalar() or 0.0
 
     return BotStats(
         bankroll=state.bankroll,
@@ -329,7 +349,11 @@ async def get_stats(db: Session = Depends(get_db)):
         win_rate=win_rate,
         total_pnl=state.total_pnl,
         is_running=state.is_running,
-        last_run=state.last_run
+        last_run=state.last_run,
+        settled_trades=settled_trades,
+        weather_max_allocation=settings.WEATHER_MAX_ALLOCATION,
+        daily_loss_limit=settings.DAILY_LOSS_LIMIT,
+        daily_pnl=float(daily_pnl),
     )
 
 
@@ -773,6 +797,7 @@ def _weather_signal_to_response(s) -> WeatherSignalResponse:
         actionable=s.passes_threshold,
         slug=s.market.slug,
         bucket_label=s.market.bucket_label,
+        unit=getattr(s.market, "unit", "F"),
         low_f=s.market.low_f,
         high_f=s.market.high_f,
         net_edge=s.net_edge,

@@ -51,7 +51,10 @@ class Settings(BaseSettings):
     WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% minimum edge to trade
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
     WEATHER_MAX_TRADE_SIZE: float = 100.0
-    WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver"
+    # US markets resolve in °F; the international markets resolve in °C (handled
+    # natively per-city — see CITY_CONFIG "unit" in backend/data/weather.py). The
+    # international books carry ~2-3x the liquidity of the US weather markets.
+    WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver,london,tokyo,seoul,paris,shanghai,hong_kong"
 
     # Trading costs (Phase 6) — "profit" must mean profit net of costs.
     # On Polymarket the dominant cost is the bid/ask spread (the live market
@@ -73,6 +76,12 @@ class Settings(BaseSettings):
     WEATHER_MIN_LIQUIDITY: float = 500.0
     WEATHER_MAX_REL_SPREAD: float = 0.10
     WEATHER_MAX_BOOK_FRACTION: float = 0.10
+    # Minimum lifetime TRADED volume ($). Distinct from liquidity (resting quotes):
+    # a market can show ~$900 of resting orders while having traded almost nothing,
+    # in which case those quotes are likely a lone market maker that can vanish and
+    # adverse selection is high — risk the static order-book sim can't capture. So
+    # we additionally require the market to have actually traded this much.
+    WEATHER_MIN_VOLUME: float = 500.0
 
     # Max total exposure to OPEN (unsettled) weather positions at once. Enforced
     # as a hard ceiling per trade so it never overshoots (was a hard-coded $500 in

@@ -30,8 +30,10 @@ interface EventGroup {
   ensembleStd: number
   members: number
   bias: number
+  unit: string
   signals: WeatherSignal[]
   actionableCount: number
+  heldCount: number
 }
 
 // Natural ladder order: "X or below" first, then ranges ascending, "X or higher" last.
@@ -70,18 +72,22 @@ export function ScanView({ signals, held = {} }: ScanViewProps) {
           ensembleStd: s.ensemble_std,
           members: s.ensemble_members,
           bias: s.bias ?? 0,
+          unit: s.unit ?? 'F',
           signals: [],
           actionableCount: 0,
+          heldCount: 0,
         }
         map.set(slug, g)
       }
       g.signals.push(s)
       // Count only actionable opportunities we don't already hold.
       if (s.actionable && !held[s.market_id]) g.actionableCount++
+      // Count buckets in this event we currently hold an open position in.
+      if (held[s.market_id]) g.heldCount++
     }
     const arr = Array.from(map.values())
     arr.forEach(g => g.signals.sort((a, b) => bucketSortKey(a) - bucketSortKey(b)))
-    arr.sort((a, b) => b.actionableCount - a.actionableCount || a.cityName.localeCompare(b.cityName))
+    arr.sort((a, b) => b.actionableCount - a.actionableCount || b.heldCount - a.heldCount || a.cityName.localeCompare(b.cityName))
     return arr
   }, [signals, held])
 
@@ -149,7 +155,9 @@ export function ScanView({ signals, held = {} }: ScanViewProps) {
             >
               {events.map(e => (
                 <option key={e.slug} value={e.slug} className="bg-neutral-900 text-neutral-100">
-                  {e.cityName} · {metricLabel(e.metric)} · {fmtDate(e.targetDate)}{e.actionableCount > 0 ? `  (${e.actionableCount} ✓)` : ''}
+                  {e.heldCount > 0 ? '✓ ' : ''}{e.cityName} · {metricLabel(e.metric)} · {fmtDate(e.targetDate)}
+                  {e.heldCount > 0 ? `  (holding ${e.heldCount})` : ''}
+                  {e.actionableCount > 0 ? `  (${e.actionableCount} new)` : ''}
                 </option>
               ))}
             </select>
@@ -173,14 +181,14 @@ export function ScanView({ signals, held = {} }: ScanViewProps) {
             {/* forecast header */}
             <div className="px-5 py-4 border-b border-neutral-800 flex flex-wrap items-baseline gap-x-6 gap-y-1">
               <div className="text-lg font-semibold text-neutral-100">
-                Forecast {(selected.ensembleMean - selected.bias).toFixed(1)}°F
+                Forecast {(selected.ensembleMean - selected.bias).toFixed(1)}°{selected.unit}
               </div>
               {Math.abs(selected.bias) >= 0.05 && (
                 <div className="text-xs text-neutral-500">
-                  raw {selected.ensembleMean.toFixed(1)}°F · bias {selected.bias >= 0 ? '+' : ''}{selected.bias.toFixed(1)}°F
+                  raw {selected.ensembleMean.toFixed(1)}°{selected.unit} · bias {selected.bias >= 0 ? '+' : ''}{selected.bias.toFixed(1)}°{selected.unit}
                 </div>
               )}
-              <div className="text-xs text-neutral-500">± {selected.ensembleStd.toFixed(1)}°F spread</div>
+              <div className="text-xs text-neutral-500">± {selected.ensembleStd.toFixed(1)}°{selected.unit} spread</div>
               <div className="text-xs text-neutral-500">{selected.members} ensemble members</div>
             </div>
 

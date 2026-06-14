@@ -1,13 +1,17 @@
 """Signal generator for weather temperature markets using ensemble forecasts."""
+import asyncio
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import List, Optional
 
+import httpx
+
 from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
 from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
+from backend.data.orderbook import fetch_ask_levels, walk_asks_for_cash
 from backend.models.database import SessionLocal, Signal
 
 logger = logging.getLogger("trading_bot")
@@ -48,18 +52,22 @@ class WeatherTradingSignal:
     @property
     def passes_threshold(self) -> bool:
         """Actionable only if, after costs, the edge clears the threshold, the
-        effective entry price is within the cap, AND the market is liquid enough
-        with a tight-enough relative spread to actually trade (Layer 1)."""
+        effective entry price is within the cap, AND the market is real enough to
+        trade: enough resting liquidity, enough actually-traded volume, and a
+        tight-enough relative spread (Layer 1)."""
         return (
             self.net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
             and 0 < self.entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
             and self.market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
+            and self.market.volume >= settings.WEATHER_MIN_VOLUME
             and self.rel_spread <= settings.WEATHER_MAX_REL_SPREAD
         )
 
 
 async def generate_weather_signal(
-    market: WeatherMarket, bankroll: Optional[float] = None
+    market: WeatherMarket,
+    bankroll: Optional[float] = None,
+    book_client: Optional[httpx.AsyncClient] = None,
 ) -> Optional[WeatherTradingSignal]:
     """
     Generate a trading signal for a weather temperature market.
@@ -146,13 +154,57 @@ async def generate_weather_signal(
     else:
         suggested_size = 0.0
 
+    # --- Exact fill: walk the REAL order book (no modelled slippage) ----------
+    # A marketable buy crosses the book level-by-level, so the price we actually
+    # pay is the VWAP across consumed levels — worse than the top-of-book ask,
+    # often dramatically so on thin weather buckets (a 6c best ask can fill at a
+    # ~19c VWAP). We replace the estimated entry with this exact fill.
+    #
+    # Only candidates are refined: walking can only LOWER net edge (you always
+    # pay up), so a bucket that doesn't clear the bar at the best ask can't clear
+    # it after slippage — no point fetching its book. This also keeps the scan
+    # cheap (a handful of book fetches, not one per bucket).
+    fill_levels = 0
+    fill_best_ask = entry_price
+    fill_partial = False
+    token_id = market.token_id_yes if direction == "yes" else market.token_id_no
+    if net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD and suggested_size > 0 and token_id:
+        asks = None
+        try:
+            # Reuse the scan's shared (pooled) client when provided — opening a
+            # fresh AsyncClient per bucket means a fresh TLS handshake each time,
+            # which gets throttled and made a scan ~9s instead of <1s.
+            if book_client is not None:
+                asks = await fetch_ask_levels(token_id, book_client)
+            else:
+                async with httpx.AsyncClient(timeout=8.0) as client:
+                    asks = await fetch_ask_levels(token_id, client)
+        except Exception as e:
+            logger.debug(f"Order-book walk failed for {market.market_id}: {e}")
+        if asks:
+            fill = walk_asks_for_cash(asks, suggested_size)
+            if fill and fill.contracts > 0:
+                # The book may be thinner than our Kelly cash; only stake what
+                # actually fills against resting liquidity.
+                if not fill.fully_filled:
+                    suggested_size = round(fill.cash, 2)
+                    fill_partial = True
+                entry_price = min(0.999, fill.vwap)            # exact avg price paid
+                # Cost is now the realized slippage over the side mid, plus fee;
+                # net edge = our probability for the side minus what we really pay.
+                cost = (entry_price - side_mid) + settings.WEATHER_FEE_RATE
+                net_edge = edge - cost
+                fill_levels = fill.levels
+                fill_best_ask = fill.best_ask
+
     # Ensemble stats for display (show the bias correction we priced on)
     mean_val = forecast.mean_high if market.metric == "high" else forecast.mean_low
     std_val = forecast.std_high if market.metric == "high" else forecast.std_low
     bias = get_station_bias(market.city_key, market.metric)
-    ensemble_str = f"{mean_val:.1f}F"
+    u = forecast.unit  # "F" or "C" — display in the market's native unit
+    ensemble_str = f"{mean_val:.1f}{u}"
     if abs(bias) >= 0.05:
-        ensemble_str = f"{mean_val:.1f}F (bias {bias:+.1f} -> {mean_val - bias:.1f}F)"
+        ensemble_str = f"{mean_val:.1f}{u} (bias {bias:+.1f} -> {mean_val - bias:.1f}{u})"
 
     # Build reasoning — mirror passes_threshold exactly so the recorded note
     # explains precisely why a bucket was or wasn't actionable.
@@ -171,12 +223,20 @@ async def generate_weather_signal(
         filter_notes.append(f"rel-spread {rel_spread:.0%} > {settings.WEATHER_MAX_REL_SPREAD:.0%}")
     filter_note = f" [{', '.join(filter_notes)}]" if filter_notes else ""
 
+    fill_note = ""
+    if fill_levels:
+        fill_note = (
+            f" | fill VWAP {entry_price:.0%} over {fill_levels} lvl "
+            f"(best ask {fill_best_ask:.0%}{', partial' if fill_partial else ''})"
+        )
+
     reasoning = (
         f"[{'ACTIONABLE' if actionable else 'FILTERED'}]{filter_note} "
         f"{market.city_name} {market.metric} {market.bucket_label} on {market.target_date} | "
-        f"Ensemble: {ensemble_str} +/- {std_val:.1f}F ({forecast.num_members} members) | "
+        f"Ensemble: {ensemble_str} +/- {std_val:.1f}{u} ({forecast.num_members} members) | "
         f"Model YES: {model_yes_prob:.0%} vs Market: {market_yes_prob:.0%} | "
         f"Edge: {edge:+.1%} -cost {cost:.1%} = net {net_edge:+.1%} -> {direction.upper()} @ {entry_price:.0%}"
+        f"{fill_note}"
     )
 
     return WeatherTradingSignal(
@@ -251,13 +311,36 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
 
     logger.info(f"Found {len(markets)} total weather temperature markets")
 
-    for market in markets:
+    # Pre-warm the forecast cache (one call per unique city/date). Without this,
+    # the concurrent pass below would stampede Open-Meteo with one request per
+    # bucket on a cold cache.
+    for city_key_, target_date_ in {(m.city_key, m.target_date) for m in markets}:
         try:
-            signal = await generate_weather_signal(market, bankroll=bankroll)
-            if signal:
-                signals.append(signal)
-        except Exception as e:
-            logger.debug(f"Weather signal generation failed for {market.title}: {e}")
+            await fetch_ensemble_forecast(city_key_, target_date_)
+        except Exception:
+            pass
+
+    # Generate signals concurrently (bounded), sharing ONE pooled HTTP client for
+    # all the order-book fetches. Each candidate walks the live book; with the
+    # forecasts pre-warmed and the client pooled this is a sub-second pass (a
+    # fresh client per bucket was ~9s of repeated TLS handshakes).
+    sem = asyncio.Semaphore(12)
+
+    async with httpx.AsyncClient(
+        timeout=8.0, limits=httpx.Limits(max_connections=20, max_keepalive_connections=20)
+    ) as book_client:
+        async def _gen(market: WeatherMarket) -> Optional[WeatherTradingSignal]:
+            async with sem:
+                try:
+                    return await generate_weather_signal(
+                        market, bankroll=bankroll, book_client=book_client
+                    )
+                except Exception as e:
+                    logger.debug(f"Weather signal generation failed for {market.title}: {e}")
+                    return None
+
+        results = await asyncio.gather(*[_gen(m) for m in markets])
+    signals = [s for s in results if s]
 
     # Sort by absolute edge
     signals.sort(key=lambda s: abs(s.edge), reverse=True)
@@ -266,8 +349,8 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     logger.info(f"WEATHER SCAN COMPLETE: {len(signals)} signals, {len(actionable)} actionable")
 
     for signal in actionable[:5]:
-        logger.info(f"  {signal.market.city_name}: {signal.market.metric} {signal.market.direction} "
-                     f"{signal.market.threshold_f:.0f}F | Edge: {signal.edge:+.1%}")
+        logger.info(f"  {signal.market.city_name}: {signal.market.metric} "
+                     f"{signal.market.bucket_label} | Edge: {signal.edge:+.1%}")
 
     # Persist signals to DB
     _persist_weather_signals(signals)

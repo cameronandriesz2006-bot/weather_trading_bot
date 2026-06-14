@@ -209,17 +209,10 @@ Treat the scanner as a cheap experiment, not a sure thing.*
 
 ---
 
-## Phase 9 — Going live (GATED — not a simple next step)
+## Phase 9 — Going live 
 
-This phase is conditional and honest about it:
+This phase is the end goal but we will not rush it:
 
-- **Legal gate.** Real trading requires being genuinely resident somewhere these
-  platforms are permitted. They are blocked/illegal in Singapore, Malaysia, and Thailand;
-  the US and UK are open. A VPN does not change the law. This isn't a step you can just
-  do from where you are now.
-- **Code gate.** There is currently *no* real-trade execution anywhere in this codebase —
-  it only reads and simulates. Going live means building and testing a whole execution
-  layer that doesn't exist.
 - **Evidence gate.** Only worth doing if Phase 7's scoreboard showed a real, net-of-fees
   edge.
 - If all three are met: start with tiny size, hard caps, and a kill switch; scale only if

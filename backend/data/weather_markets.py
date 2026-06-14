@@ -32,6 +32,14 @@ SLUG_CITY_TO_KEY = {
     "miami": "miami",
     "denver": "denver",
     "los-angeles": "los_angeles",
+    # International (Celsius) cities. The slug fragment uses hyphens; our key uses
+    # underscores. Must match CITY_CONFIG keys in backend/data/weather.py.
+    "london": "london",
+    "tokyo": "tokyo",
+    "seoul": "seoul",
+    "paris": "paris",
+    "shanghai": "shanghai",
+    "hong-kong": "hong_kong",
 }
 
 MONTH_MAP = {
@@ -65,14 +73,20 @@ class WeatherMarket:
     #   "81°F or below" -> (None, 81)   "82-83°F" -> (82, 83)   "100°F or higher" -> (100, None)
     low_f: Optional[float]
     high_f: Optional[float]
-    bucket_label: str         # human-readable, e.g. "82-83°F"
+    bucket_label: str         # human-readable, e.g. "82-83°F" or "18°C"
     yes_price: float          # Price of YES outcome (0-1), ~mid
     no_price: float           # Price of NO outcome (0-1), ~mid
+    unit: str = "F"           # native unit of low_f/high_f bounds ("F" US, "C" intl)
     spread: float = 0.0       # live bid/ask spread in price units (cost to cross)
     volume: float = 0.0
     liquidity: float = 0.0    # $ resting in the book (Gamma liquidityNum) — depth proxy
     best_bid: Optional[float] = None   # live best bid for YES (None if absent)
     best_ask: Optional[float] = None   # live best ask for YES (None if absent)
+    # CLOB token ids for the YES / NO outcomes — needed to fetch each side's real
+    # order book and compute the exact VWAP fill (walking the book), not just the
+    # top-of-book ask. The NO side has its own book, so we keep both ids.
+    token_id_yes: Optional[str] = None
+    token_id_no: Optional[str] = None
     closed: bool = False
 
     @property
@@ -96,21 +110,35 @@ class WeatherMarket:
 
 def parse_bucket_label(label: str) -> Optional[Tuple[Optional[float], Optional[float]]]:
     """
-    Parse a bucket label into (low_f, high_f); None bound = open-ended.
+    Parse a bucket label into (low, high) in the market's NATIVE unit; a None
+    bound = open-ended tail. Returns None if it can't be read cleanly (skip it).
 
-    Returns None if the label can't be read cleanly (caller should skip it).
+    Handles both market families:
+      - US °F two-degree ranges:   "82-83°F"            -> (82, 83)
+      - International °C single-degree: "18°C"           -> (18, 18)
+      - open tails (either unit):  "17°C or below"      -> (None, 17)
+                                   "27°C or higher"     -> (27, None)
+
+    The bound numbers are taken verbatim in the label's unit — no conversion. A
+    single-degree bucket "N" returns (N, N); the probability layer then integrates
+    the rounding interval [N-0.5, N+0.5) in that same native unit. We strip the
+    unit letter (°C / °F / bare c / f) before matching so it never interferes.
     """
     if not label:
         return None
-    text = label.lower().replace("°", " ").replace("℉", " ")
+    text = label.lower().replace("°", " ").replace("℉", " ").replace("℃", " ")
+    # Drop a unit letter immediately after a number ("18 c" -> "18", "82-83 f"
+    # -> "82-83", "17 c or below" -> "17 or below"). Word boundary so we don't
+    # eat letters inside other tokens.
+    text = re.sub(r"(\d)\s*[cf]\b", r"\1", text)
 
-    # "81 or below" / "81f or below" / "81 or lower"
-    m = re.search(r"(\d+)\s*f?\s*or\s*(?:below|lower|less)", text)
+    # "81 or below" / "17 or lower" / "17 or less" / "17 or under"
+    m = re.search(r"(\d+)\s*or\s*(?:below|lower|less|under)", text)
     if m:
         return (None, float(m.group(1)))
 
-    # "100 or higher" / "100f or above" / "100 or more"
-    m = re.search(r"(\d+)\s*f?\s*or\s*(?:higher|above|more)", text)
+    # "100 or higher" / "27 or above" / "27 or more" / "27 or over"
+    m = re.search(r"(\d+)\s*or\s*(?:higher|above|more|over)", text)
     if m:
         return (float(m.group(1)), None)
 
@@ -121,6 +149,12 @@ def parse_bucket_label(label: str) -> Optional[Tuple[Optional[float], Optional[f
         if lo <= hi:
             return (lo, hi)
         return None
+
+    # Single degree "18" -> the one-integer bucket [18, 18].
+    m = re.fullmatch(r"\s*(\d+)\s*", text)
+    if m:
+        v = float(m.group(1))
+        return (v, v)
 
     return None
 
@@ -187,6 +221,7 @@ def _parse_bucket_market(
     city_name: str,
     metric: str,
     target_date: date,
+    unit: str = "F",
 ) -> Optional[WeatherMarket]:
     """Parse one bucket market within a daily-temperature event."""
     if market_data.get("closed", False):
@@ -219,6 +254,19 @@ def _parse_bucket_market(
     if volume is None:
         volume = _to_float(market_data.get("volume"), 0.0)
 
+    # CLOB token ids: ["<yes_token>", "<no_token>"] (sometimes a JSON string).
+    token_id_yes = token_id_no = None
+    clob_tokens = market_data.get("clobTokenIds")
+    if isinstance(clob_tokens, str):
+        import json
+        try:
+            clob_tokens = json.loads(clob_tokens)
+        except Exception:
+            clob_tokens = None
+    if isinstance(clob_tokens, list) and len(clob_tokens) >= 2:
+        token_id_yes = str(clob_tokens[0]) or None
+        token_id_no = str(clob_tokens[1]) or None
+
     return WeatherMarket(
         slug=event_slug,
         market_id=str(market_data.get("id", "")),
@@ -233,11 +281,14 @@ def _parse_bucket_market(
         bucket_label=label,
         yes_price=yes_price,
         no_price=no_price,
+        unit=unit,
         spread=spread,
         volume=volume,
         liquidity=liquidity,
         best_bid=_to_float(market_data.get("bestBid"), None),
         best_ask=_to_float(market_data.get("bestAsk"), None),
+        token_id_yes=token_id_yes,
+        token_id_no=token_id_no,
     )
 
 
@@ -294,10 +345,11 @@ async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None
         if city_key not in CITY_CONFIG:
             continue
         city_name = CITY_CONFIG[city_key]["name"]
+        unit = CITY_CONFIG[city_key].get("unit", "F")
 
         for market_data in event.get("markets", []):
             market = _parse_bucket_market(
-                market_data, event.get("slug", ""), city_key, city_name, metric, target_date
+                market_data, event.get("slug", ""), city_key, city_name, metric, target_date, unit=unit
             )
             if market:
                 markets.append(market)

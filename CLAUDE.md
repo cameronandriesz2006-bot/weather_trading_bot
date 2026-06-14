@@ -16,8 +16,8 @@ serves a React dashboard.
 ## Hard constraints (do not violate)
 
 - **SIMULATION ONLY.** `SIMULATION_MODE` must stay `True` (`backend/config.py`). Never
-  flip it. There is no real-trade execution layer and we are not building one now.
-- **The goal is not profit — it's an honest scoreboard.** Fix forecasts and measurement
+  flip it until ready to go live.
+- **Fix forecasts and measurement
   first, then let the simulation tell us whether the model beats the market net of fees.
 - **Don't skip ahead.** Get the basics correct before any fancy model work. Better models
   on top of a wrong location/timezone/scoreboard just produce confident nonsense faster.
@@ -38,7 +38,7 @@ serves a React dashboard.
 | 7 | Run weeks in simulation; decision point: does it beat the price net of fees? | |
 | 7+ | Profitability levers (selectivity, intraday, threshold tuning, exit logic, more cities) | |
 | 8 | Optional observe-only cross-platform arbitrage scanner | |
-| 9 | GATED go-live (legal + code + evidence gates) — not a simple next step | |
+| 9 | GATED go-live (connect to polymarket and run the bot live)| |
 
 Re-run the scoreboard after every change. One change at a time, always keep it running.
 
@@ -56,14 +56,27 @@ and read the scoreboard.
   bankroll; covers all actionable opportunities); `DAILY_LOSS_LIMIT` $300→**$750** in step so
   the breaker doesn't stall data collection. `MAX_TRADE_SIZE` $75 and `KELLY_FRACTION` 0.10
   unchanged. `MAX_TRADES_PER_SCAN`=3 (hard-coded throttle; only paces the ramp).
-- **Pending (small):** the dashboard "Open positions" sub-label still hard-codes "/$500" — make
-  it read the real cap from the API (was mid-change when this was written: add the cap to the
-  stats/dashboard response and use it in `App.tsx`).
-- **Next big lever (discussed, NOT started): international cities.** Seoul/Tokyo/London/HK/Paris/
-  Shanghai have **2–3× the liquidity** of the US markets, and Open-Meteo forecasts them for free —
-  BUT they price in **°C** while the bot assumes **°F**. Main work = Celsius unit handling (parser
-  + conversion + rounding is ±0.5°C not ±0.5°F + sigma config units) and per-city settlement
-  stations; everything else (signals, sizing, P&L, dashboard, bias backfill) is reusable.
+- **Cap display — DONE.** `/api/stats` now returns `weather_max_allocation`, `daily_loss_limit`,
+  `daily_pnl`, and `settled_trades`; `App.tsx` reads the real cap (no more hard-coded "/$500"),
+  added a **Daily-loss** status card ($ lost today / limit, red when the breaker trips), and the
+  **win rate** is now over RESOLVED trades (was divided by `total_trades`, which counts open
+  positions).
+- **International cities (Celsius) — DONE.** Seoul/Tokyo/London/HK/Paris/Shanghai are now traded
+  alongside the US markets (`WEATHER_CITIES` extended). They resolve in **°C** with **single-degree**
+  buckets ("18°C") vs the US °F **two-degree** ranges ("82-83°F"). Design principle: **no temperature
+  is ever converted** — each city has a native `unit` ("F"/"C") in `CITY_CONFIG`; the forecast is
+  fetched in that unit (`temperature_unit`), buckets are parsed in that unit, and the existing
+  ±0.5 rounding integral runs natively (0.5°C for °C). `parse_bucket_label` now reads °C/°F unit
+  letters + single-degree labels → `(N,N)` → interval `[N-0.5, N+0.5)`; this is correct for both
+  the whole-degree cities (London/Seoul/Paris/Shanghai, Wunderground) AND HK (one-decimal, HKO).
+  Settlement stations per the markets' own resolution text: London City (EGLC), Tokyo Haneda (RJTT),
+  Seoul→**Incheon** (RKSI), Paris→**Le Bourget** (LFPB), Shanghai→**Pudong** (ZSPD), HK→**HKO HQ**.
+  The σ-floor constants (defined in °F) are scaled by 1/1.8 for °C cities (exact for a temperature
+  *spread*). Polymarket settles from its own market outcome (price-based), so units never enter
+  settlement. Live check: forecasts are sane °C, bucket probs form a clean bell curve summing ~1,
+  intl books carry $2-4k liquidity vs ~$0.8k US. Tests: `tests/test_celsius_markets.py`.
+  **Still deferred:** per-station **bias** for the °C cities (cold-start 0 = no-op until the backfill
+  is run in °C — `bias_f` must be stored in the city's native unit); intraday conditioning.
 
 ### Dashboard — REBUILT (weather-only, clean & spacious)
 The old dense BTC-era dashboard was replaced. Frontend components now: `ScanView` (dropdown →
@@ -79,6 +92,14 @@ target_date, settlement_time). `Trade` gained a `bucket_label` column (+ a one-o
 `backend/data/backfill_trade_buckets.py` to fill old rows).
 
 ### Other recent fixes (post-Phase-6)
+- **Settlement never fired (resolved trades stuck "active") — FIXED.** Two bugs in
+  `settlement.py`: (1) it graded against `markets[0]` of the event instead of the specific
+  bucket we hold (`market_id`), and (2) it required Polymarket's `closed` flag, but
+  daily-temperature events stay `closed: false` for hours/days after the day's high/low is
+  fixed — the outcome shows only as the price going to the rails (~0.9995/0.0005). Now it
+  matches the exact bucket by id and settles when EITHER `closed` is true OR the target local
+  day is over AND the price is decisive (>0.99/<0.01). Bankroll/win-rate/scoreboard update via
+  the existing settlement job once settled.
 - **P&L = cash-staked** (see issue 6 sizing note): loss = full stake (`-size`), win = net odds
   (`size*(1-p)/p`). Old settled trades were re-graded. Tests: `tests/test_pnl.py`.
 - **Trade loop no longer freezes:** it used `actionable[:3]` then skipped held markets, so once
@@ -167,8 +188,26 @@ target_date, settlement_time). `Trade` gained a `bucket_label` column (+ a one-o
    (`WEATHER_MAX_BOOK_FRACTION`, 10%) so we don't pretend to fill $75 into a $200 market. Live
    check: actionable fell from ~22 to ~8–10; the large edges that survive are on liquid,
    tight-spread markets (→ that's forecast **bias**, the next lever, not liquidity). Tests
-   extended in `tests/test_weather_signal_costs.py`. **Still deferred:** size-dependent
-   slippage baked into the fill price (Layer 2(ii)) and real order-book walking (Layer 3).
+   extended in `tests/test_weather_signal_costs.py`.
+   **Exact order-book fills (Layer 2(ii) + Layer 3) — NOW DONE.** Instead of assuming we
+   fill the whole order at the top-of-book ask, candidate signals now WALK THE REAL CLOB
+   ORDER BOOK and pay the exact VWAP across consumed levels — no modelled slippage curve,
+   the actual fill against the book as quoted. `backend/data/orderbook.py`
+   (`fetch_ask_levels` + `walk_asks_for_cash` + `simulate_market_buy`) fetches a token's book
+   from `https://clob.polymarket.com/book` and consumes asks cheapest-first for the Kelly cash
+   amount; `WeatherMarket` now carries `token_id_yes`/`token_id_no` (parsed from Gamma
+   `clobTokenIds`), and `generate_weather_signal` replaces the estimated entry with the VWAP,
+   recomputing `cost = (vwap − side_mid) + fee` and `net_edge`. Effect is dramatic on thin
+   buckets: a 6¢ best ask can fill at a ~19–35¢ VWAP, so many top-of-book "edges" correctly
+   collapse below threshold (live actionable dropped to ~4–5). **Platform-generic by design:**
+   it keys off `clobTokenIds` + the live book, entirely in price/cash space (no city or °F/°C
+   coupling), so it works for ANY Polymarket market we scan later (more-liquid US or
+   international) — liquid books fill near the best ask with ~0 slippage; thin books slip. Only
+   CANDIDATES are walked (walking can only lower edge, so sub-threshold buckets are skipped),
+   and the scan shares ONE pooled HTTP client and runs concurrently — without that a fresh
+   client per bucket was ~16s/scan; now ~1.5s. Tests: `tests/test_orderbook.py`. **Still
+   deferred:** the NO side uses its own (mirror) book directly; Kalshi has no `clobTokenIds`
+   so it still falls back to the spread estimate (needs its own book walker when enabled).
 8. **Kelly sized off a constant bankroll — FIXED.** `generate_weather_signal` now takes the
    **live** bankroll (read from `BotState` in `scan_for_weather_signals`, fallback
    `INITIAL_BANKROLL`), so bets shrink after losses instead of always sizing off $10k.

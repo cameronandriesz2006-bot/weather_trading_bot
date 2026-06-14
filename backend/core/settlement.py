@@ -7,6 +7,7 @@ from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
 from backend.models.database import Trade, BotState, Signal
+from backend.data.weather_markets import parse_event_slug
 
 logger = logging.getLogger("trading_bot")
 
@@ -15,14 +16,27 @@ async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] 
     """
     Fetch actual market resolution from Polymarket API.
 
-    For BTC 5-min markets, uses event slug to find the market.
+    For weather markets each event is a GROUP of mutually-exclusive bucket
+    markets, so we must resolve against the SPECIFIC bucket we hold
+    (``market_id``) — not ``markets[0]`` — or we'd grade every bucket in the
+    event against the first one's outcome.
 
     Returns: (is_resolved, settlement_value)
-        - settlement_value: 1.0 if Up won, 0.0 if Down won
+        - settlement_value: 1.0 if Yes/Up won, 0.0 if No/Down won
     """
+    # Polymarket leaves weather events ``closed: false`` for a while after the
+    # day's outcome is already decided. Once the target local day is over we can
+    # trust a price that has gone to the rails (~0.9995 / ~0.0005) as final.
+    day_is_over = False
+    if event_slug:
+        parsed = parse_event_slug(event_slug)
+        if parsed:
+            _, _, target_date = parsed
+            day_is_over = target_date < date.today()
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            # Try event slug first (more reliable for BTC 5-min markets)
+            # Find the exact bucket market inside its event by id.
             if event_slug:
                 response = await client.get(
                     "https://gamma-api.polymarket.com/events",
@@ -33,27 +47,27 @@ async def fetch_polymarket_resolution(market_id: str, event_slug: Optional[str] 
 
                 if events:
                     event = events[0] if isinstance(events, list) else events
-                    markets = event.get("markets", [])
-                    if markets:
-                        return _parse_market_resolution(markets[0])
+                    for market in event.get("markets", []):
+                        if str(market.get("id")) == str(market_id):
+                            return _parse_market_resolution(market, day_is_over=day_is_over)
 
             # Fallback: try market ID directly
             url = f"https://gamma-api.polymarket.com/markets/{market_id}"
             response = await client.get(url)
 
             if response.status_code == 404:
-                return await _search_market_in_events(market_id)
+                return await _search_market_in_events(market_id, day_is_over=day_is_over)
 
             response.raise_for_status()
             market = response.json()
-            return _parse_market_resolution(market)
+            return _parse_market_resolution(market, day_is_over=day_is_over)
 
     except Exception as e:
         logger.warning(f"Failed to fetch resolution for {event_slug or market_id}: {e}")
         return False, None
 
 
-async def _search_market_in_events(market_id: str) -> Tuple[bool, Optional[float]]:
+async def _search_market_in_events(market_id: str, day_is_over: bool = False) -> Tuple[bool, Optional[float]]:
     """Search for market in events (both active and closed)."""
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
@@ -72,7 +86,7 @@ async def _search_market_in_events(market_id: str) -> Tuple[bool, Optional[float
                 for event in events:
                     for market in event.get("markets", []):
                         if str(market.get("id")) == str(market_id):
-                            return _parse_market_resolution(market)
+                            return _parse_market_resolution(market, day_is_over=day_is_over)
 
         return False, None
 
@@ -81,43 +95,49 @@ async def _search_market_in_events(market_id: str) -> Tuple[bool, Optional[float
         return False, None
 
 
-def _parse_market_resolution(market: dict) -> Tuple[bool, Optional[float]]:
+def _parse_market_resolution(market: dict, day_is_over: bool = False) -> Tuple[bool, Optional[float]]:
     """
-    Parse market data to determine if resolved and outcome.
+    Parse market data to determine if resolved and the outcome.
 
-    Handles both Yes/No and Up/Down outcomes.
-    - outcomePrices[0] > 0.99 -> first outcome won (Yes or Up)
-    - outcomePrices[0] < 0.01 -> second outcome won (No or Down)
+    Handles both Yes/No and Up/Down outcomes:
+    - outcomePrices[0] >= ~1.0 -> first outcome won (Yes or Up)
+    - outcomePrices[0] <= ~0.0 -> second outcome won (No or Down)
+
+    A market counts as resolved when EITHER:
+      - Polymarket has flipped ``closed`` to True (always authoritative), OR
+      - the target local day is over (``day_is_over``) AND the price has gone to
+        the rails (>0.99 / <0.01). Polymarket leaves daily-temperature events
+        ``closed: false`` for hours/days after the high/low is fixed, so without
+        this second path settled trades never moved off the books.
     """
     is_closed = market.get("closed", False)
 
-    if not is_closed:
-        return False, None
-
     outcome_prices = market.get("outcomePrices", [])
+    if isinstance(outcome_prices, str):
+        try:
+            outcome_prices = json.loads(outcome_prices)
+        except Exception:
+            return False, None
     if not outcome_prices:
         return False, None
 
     try:
-        if isinstance(outcome_prices, str):
-            outcome_prices = json.loads(outcome_prices)
-
-        first_price = float(outcome_prices[0]) if outcome_prices else 0.5
-
-        if first_price > 0.99:
-            # First outcome won (Up or Yes)
-            logger.info(f"Market {market.get('id')} resolved: UP/YES won")
-            return True, 1.0
-        elif first_price < 0.01:
-            # Second outcome won (Down or No)
-            logger.info(f"Market {market.get('id')} resolved: DOWN/NO won")
-            return True, 0.0
-        else:
-            return False, None
-
+        first_price = float(outcome_prices[0])
     except (ValueError, IndexError, TypeError) as e:
         logger.warning(f"Failed to parse outcome prices: {e}")
         return False, None
+
+    decisive = first_price > 0.99 or first_price < 0.01
+
+    if not (is_closed or (day_is_over and decisive)):
+        return False, None
+
+    if first_price >= 0.5:
+        logger.info(f"Market {market.get('id')} resolved: YES/UP won (price {first_price:.4f})")
+        return True, 1.0
+    else:
+        logger.info(f"Market {market.get('id')} resolved: NO/DOWN won (price {first_price:.4f})")
+        return True, 0.0
 
 
 def calculate_pnl(trade: Trade, settlement_value: float) -> float:
