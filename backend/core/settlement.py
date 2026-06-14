@@ -7,7 +7,7 @@ from typing import Optional, List, Tuple
 from sqlalchemy.orm import Session
 
 from backend.models.database import Trade, BotState, Signal
-from backend.data.weather_markets import parse_event_slug
+from backend.data.weather_markets import parse_event_slug, yes_index
 
 logger = logging.getLogger("trading_bot")
 
@@ -121,8 +121,11 @@ def _parse_market_resolution(market: dict, day_is_over: bool = False) -> Tuple[b
     if not outcome_prices:
         return False, None
 
+    # Read the YES price by the market's own outcome labels — a flipped
+    # ["No","Yes"] market would otherwise be graded backwards.
+    yi = yes_index(market)
     try:
-        first_price = float(outcome_prices[0])
+        first_price = float(outcome_prices[yi])
     except (ValueError, IndexError, TypeError) as e:
         logger.warning(f"Failed to parse outcome prices: {e}")
         return False, None

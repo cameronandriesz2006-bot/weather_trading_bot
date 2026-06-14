@@ -666,12 +666,14 @@ async def _fetch_outcome_prices(client: httpx.AsyncClient, market_id: str):
         pair = None
 
         # Preferred: live CLOB book mid for each outcome token.
+        from backend.data.weather_markets import yes_index
         tids = data.get("clobTokenIds")
         if isinstance(tids, str):
             tids = json.loads(tids)
         if tids and len(tids) >= 2:
-            yes_top = await fetch_book_top(tids[0], client)
-            no_top = await fetch_book_top(tids[1], client)
+            yi = yes_index(data)
+            yes_top = await fetch_book_top(tids[yi], client)
+            no_top = await fetch_book_top(tids[1 - yi], client)
             if yes_top or no_top:
                 # The two sides are complementary (yes_mid ≈ 1 - no_mid); if one
                 # book is empty, derive it from the other so we always show both.

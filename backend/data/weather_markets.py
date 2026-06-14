@@ -16,6 +16,7 @@ This reader:
   bucket it cannot read cleanly instead of fabricating a threshold.
 """
 import httpx
+import json
 import re
 import logging
 from dataclasses import dataclass
@@ -130,32 +131,32 @@ def parse_bucket_label(label: str) -> Optional[Tuple[Optional[float], Optional[f
     """
     if not label:
         return None
-    text = label.lower().replace("°", " ").replace("℉", " ").replace("℃", " ")
+    text = label.lower().replace("°", " ").replace("℉", " ").replace("℃", " ").replace("−", "-")
     # Drop a unit letter immediately after a number ("18 c" -> "18", "82-83 f"
     # -> "82-83", "17 c or below" -> "17 or below"). Word boundary so we don't
     # eat letters inside other tokens.
     text = re.sub(r"(\d)\s*[cf]\b", r"\1", text)
 
     # "81 or below" / "17 or lower" / "17 or less" / "17 or under"
-    m = re.search(r"(\d+)\s*or\s*(?:below|lower|less|under)", text)
+    m = re.search(r"(-?\d+)\s*or\s*(?:below|lower|less|under)", text)
     if m:
         return (None, float(m.group(1)))
 
     # "100 or higher" / "27 or above" / "27 or more" / "27 or over"
-    m = re.search(r"(\d+)\s*or\s*(?:higher|above|more|over)", text)
+    m = re.search(r"(-?\d+)\s*or\s*(?:higher|above|more|over)", text)
     if m:
         return (float(m.group(1)), None)
 
-    # "82-83" / "82 - 83"
-    m = re.search(r"(\d+)\s*[-–]\s*(\d+)", text)
+    # "82-83" / "82 - 83" (and negatives, e.g. "-5 - -3" in winter °C)
+    m = re.search(r"(-?\d+)\s*[-–]\s*(-?\d+)", text)
     if m:
         lo, hi = float(m.group(1)), float(m.group(2))
         if lo <= hi:
             return (lo, hi)
         return None
 
-    # Single degree "18" -> the one-integer bucket [18, 18].
-    m = re.fullmatch(r"\s*(\d+)\s*", text)
+    # Single degree "18" / "-2" -> the one-integer bucket [N, N].
+    m = re.fullmatch(r"\s*(-?\d+)\s*", text)
     if m:
         v = float(m.group(1))
         return (v, v)
@@ -218,6 +219,30 @@ def _parse_outcome_prices(market_data: dict) -> Optional[Tuple[float, float]]:
         return None
 
 
+def yes_index(market_data: dict) -> int:
+    """Index (0 or 1) of the 'Yes' outcome within a binary market's PARALLEL
+    arrays (``outcomePrices`` / ``clobTokenIds``). Polymarket usually orders
+    ``["Yes", "No"]`` but does not guarantee it; if a market were listed flipped,
+    reading index 0 as 'Yes' would invert price, token, fill AND settlement for
+    that bucket. We read the market's own ``outcomes`` labels and locate 'Yes'.
+    Falls back to 0 when there is no clean Yes/No pair (e.g. legacy Up/Down),
+    which preserves the historical first-outcome = Yes/Up behaviour.
+    """
+    outcomes = market_data.get("outcomes")
+    if isinstance(outcomes, str):
+        try:
+            outcomes = json.loads(outcomes)
+        except Exception:
+            outcomes = None
+    if isinstance(outcomes, list) and len(outcomes) == 2:
+        labels = [str(o).strip().lower() for o in outcomes]
+        if "yes" in labels:
+            return labels.index("yes")
+        if "no" in labels:
+            return 1 - labels.index("no")
+    return 0
+
+
 def _parse_bucket_market(
     market_data: dict,
     event_slug: str,
@@ -239,10 +264,13 @@ def _parse_bucket_market(
         return None
     low_f, high_f = bounds
 
+    # Map prices/tokens to YES/NO by the market's own outcome labels, not a fixed
+    # index — a flipped ["No","Yes"] market would otherwise invert the side.
+    yi = yes_index(market_data)
     prices = _parse_outcome_prices(market_data)
     if prices is None:
         return None
-    yes_price, no_price = prices
+    yes_price, no_price = prices[yi], prices[1 - yi]
 
     # Drop dead/illiquid buckets pinned to the rails; the near-the-money
     # buckets are the only tradeable ones.
@@ -258,18 +286,18 @@ def _parse_bucket_market(
     if volume is None:
         volume = _to_float(market_data.get("volume"), 0.0)
 
-    # CLOB token ids: ["<yes_token>", "<no_token>"] (sometimes a JSON string).
+    # CLOB token ids, ordered to match the YES/NO mapping above (the field is
+    # sometimes a JSON string).
     token_id_yes = token_id_no = None
     clob_tokens = market_data.get("clobTokenIds")
     if isinstance(clob_tokens, str):
-        import json
         try:
             clob_tokens = json.loads(clob_tokens)
         except Exception:
             clob_tokens = None
     if isinstance(clob_tokens, list) and len(clob_tokens) >= 2:
-        token_id_yes = str(clob_tokens[0]) or None
-        token_id_no = str(clob_tokens[1]) or None
+        token_id_yes = str(clob_tokens[yi]) or None
+        token_id_no = str(clob_tokens[1 - yi]) or None
 
     return WeatherMarket(
         slug=event_slug,
@@ -289,8 +317,10 @@ def _parse_bucket_market(
         spread=spread,
         volume=volume,
         liquidity=liquidity,
-        best_bid=_to_float(market_data.get("bestBid"), None),
-        best_ask=_to_float(market_data.get("bestAsk"), None),
+        # Gamma best bid/ask are quoted for the index-0 outcome; only trust them as
+        # the YES quote when YES is index 0 (else the live CLOB refresh fills them).
+        best_bid=_to_float(market_data.get("bestBid"), None) if yi == 0 else None,
+        best_ask=_to_float(market_data.get("bestAsk"), None) if yi == 0 else None,
         token_id_yes=token_id_yes,
         token_id_no=token_id_no,
     )
