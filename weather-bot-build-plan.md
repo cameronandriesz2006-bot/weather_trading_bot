@@ -149,6 +149,17 @@ just multiplies confident nonsense across more markets. Listed biggest-first:
    thin-market slippage quietly eat the marginal ones. Use the scoreboard to find the
    edge level above which you're actually profitable, and only trade above it.
 
+   *Implemented (2026-06-14):* three liquidity-quality gates in `passes_threshold` —
+   `WEATHER_MIN_LIQUIDITY` ($500 resting), `WEATHER_MAX_REL_SPREAD` (10%), and
+   `WEATHER_MIN_VOLUME` ($500 actually-traded; liquidity≠volume — a lone market maker can
+   post resting size in a market that has barely traded). On top of the gates, every
+   *candidate* walks the **live CLOB book** and pays the exact VWAP, so modelled slippage
+   is replaced by the real fill. **Gate-level note:** $500/$500 are deliberately permissive
+   to keep evaluation data flowing; they are a *capacity/selectivity* lever, not the
+   profitability switch (the per-trade order-book walk is what guarantees each trade has a
+   real net edge). Raise both before live or scaled trading — thin markets also carry the
+   worst Gamma price-staleness (see CLAUDE.md known issues) and the least exit capacity.
+
 2. **Intraday conditioning (the likely real money).** Listed under Phase 5, but probably
    the single highest-profit change in the whole plan. Near settlement, the day's high is
    largely fixed by what's already been observed, and the market is often slow to fully

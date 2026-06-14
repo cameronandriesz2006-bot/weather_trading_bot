@@ -738,7 +738,17 @@ _MTM_TTL = 30.0
 
 
 async def _fetch_outcome_prices(client: httpx.AsyncClient, market_id: str):
-    """(yes, no) current prices for a Polymarket market id, cached briefly."""
+    """(yes, no) current prices for a Polymarket market id, cached briefly.
+
+    Marks off the LIVE CLOB book (mid), not Gamma's ``outcomePrices``: those
+    cached Gamma fields can be ~20c stale on thin daily-temperature markets (the
+    same reason the signal generator walks the live book for fills). We look up
+    the market's two outcome tokens (``clobTokenIds``) and read each token's live
+    top-of-book mid. Falls back to Gamma ``outcomePrices`` only if the book is
+    unavailable.
+    """
+    from backend.data.orderbook import fetch_book_top
+
     now = time.time()
     cached = _mtm_cache.get(market_id)
     if cached and now - cached[0] < _MTM_TTL:
@@ -747,12 +757,33 @@ async def _fetch_outcome_prices(client: httpx.AsyncClient, market_id: str):
         r = await client.get(f"https://gamma-api.polymarket.com/markets/{market_id}")
         if r.status_code != 200:
             return None
-        op = r.json().get("outcomePrices")
-        if isinstance(op, str):
-            op = json.loads(op)
-        if not op or len(op) < 2:
+        data = r.json()
+        pair = None
+
+        # Preferred: live CLOB book mid for each outcome token.
+        tids = data.get("clobTokenIds")
+        if isinstance(tids, str):
+            tids = json.loads(tids)
+        if tids and len(tids) >= 2:
+            yes_top = await fetch_book_top(tids[0], client)
+            no_top = await fetch_book_top(tids[1], client)
+            if yes_top or no_top:
+                # The two sides are complementary (yes_mid ≈ 1 - no_mid); if one
+                # book is empty, derive it from the other so we always show both.
+                yes_mid = yes_top.mid if yes_top else (1.0 - no_top.mid)
+                no_mid = no_top.mid if no_top else (1.0 - yes_top.mid)
+                pair = (yes_mid, no_mid)
+
+        # Fallback: Gamma's cached outcomePrices (may be stale, but better than nothing).
+        if pair is None:
+            op = data.get("outcomePrices")
+            if isinstance(op, str):
+                op = json.loads(op)
+            if op and len(op) >= 2:
+                pair = (float(op[0]), float(op[1]))
+
+        if pair is None:
             return None
-        pair = (float(op[0]), float(op[1]))
         _mtm_cache[market_id] = (now, pair)
         return pair
     except Exception:

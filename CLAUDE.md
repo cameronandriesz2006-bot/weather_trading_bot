@@ -49,6 +49,36 @@ Model-correctness + cost work (Phases 1–7) is done. We are now in **Phase 7
 **current-model** trades (liquidity/spread-gated, bias-corrected, cash-staked). Let it run
 and read the scoreboard.
 
+### Latest changes (2026-06-14, second pass)
+- **Min traded-volume gate — DONE.** Added `WEATHER_MIN_VOLUME` ($500) to
+  `passes_threshold` (`weather_signals.py`). **Liquidity ≠ volume:** liquidity is $ *resting*
+  in the book (`liquidityNum`), volume is $ *actually traded* (`volumeNum`). A market can show
+  $1.4k resting while only ~$70 has ever traded (e.g. LA `72-73°F` Jun15) — those quotes are
+  likely a lone market maker that can vanish, and adverse selection is high; the static
+  order-book sim can't see that risk. $500 was chosen from the **live volume distribution** (it
+  sits in the natural $414→$756 gap), not for symmetry with the liquidity floor. Live effect:
+  actionable 19→13. **Gate-level caveat (see below):** $500/$500 are fine for *evaluation* but
+  are deliberately permissive; raise both before live/scaled trading.
+- **Second scoreboard reset (clean test of the volume-gated model).** All trades + signals
+  deleted, bankroll → $10k, counters → 0. This reset cost **nothing realized**: at reset time
+  all 28 open trades were unsettled ($0 P&L, bankroll untouched), so the scoreboard was empty —
+  but several open positions were in markets the new volume gate rejects (LA, Tokyo), so keeping
+  them would have written the *first* scoreboard rows for trades the current model wouldn't take.
+- **Mark-to-market "Now" price was stale — FIXED.** The dashboard's live price + unrealized P&L
+  read Gamma's cached `outcomePrices`, which is **badly stale on thin daily-temperature markets**
+  (observed Shanghai `22°C` NO at 0.42 when the live book was ~0.65 — a 23¢ error). Gamma's
+  `bestBid`/`bestAsk`/`lastTradePrice` were *also* stale. **Only the live CLOB `/book` is ground
+  truth.** `_fetch_outcome_prices` (`api/main.py`) now looks up the market's `clobTokenIds` and
+  marks each side at its live CLOB **mid** (`orderbook.fetch_book_top`), falling back to Gamma
+  `outcomePrices` only if the book is unavailable. (This is the same reason the signal generator
+  already walks the live book for fills — issue 7.)
+- **NEW known issue (deferred): the scan's ENTRY edge screen still uses the stale Gamma mid.**
+  `weather_markets.py` reads `yes_price`/`no_price` from Gamma `outcomePrices` for the initial
+  edge calc; only *candidates* get corrected by walking the live CLOB. So a stale Gamma price can
+  (a) flag a false candidate that the walk then filters (safe, wasteful) or (b) **hide a real edge
+  so the bucket is never walked (missed opportunity)**. Fix later by sourcing the screen price from
+  the live book too. Thin markets — exactly where the volume gate bites — are where this is worst.
+
 - **Scoreboard reset.** All old trades + signals deleted (they were placed by the
   pre-gate / pre-bias / contract-count model and would pollute the test); bankroll back to
   $10k. A check showed 9 of the old 10 trades would be rejected by the current gates.

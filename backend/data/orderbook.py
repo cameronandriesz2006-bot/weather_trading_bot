@@ -37,6 +37,51 @@ class FillResult:
     book_depth_cash: float  # total USDC to sweep the entire ask side (depth proxy)
 
 
+@dataclass
+class BookTop:
+    """Top of book for a single outcome token, from the live CLOB."""
+    best_bid: Optional[float]   # highest bid (what you could sell into now)
+    best_ask: Optional[float]   # lowest ask (what you'd pay to buy now)
+    mid: float                  # (bid+ask)/2, or the one side present
+
+
+async def fetch_book_top(
+    token_id: str, client: httpx.AsyncClient
+) -> Optional[BookTop]:
+    """
+    Fetch the live top of book (best bid/ask + mid) for a CLOB token.
+
+    Use this for mark-to-market display: Gamma's cached ``outcomePrices`` /
+    ``bestBid`` / ``bestAsk`` fields can be badly stale on thin daily-temperature
+    markets (observed ~20c off), so the live CLOB book is the only trustworthy
+    "current price". Returns None if the book can't be read or is empty on both
+    sides, so callers can fall back.
+    """
+    if not token_id:
+        return None
+    try:
+        r = await client.get(CLOB_BOOK_URL, params={"token_id": token_id})
+        if r.status_code != 200:
+            return None
+        data = r.json()
+        bids = _parse_levels(data.get("bids"))
+        asks = _parse_levels(data.get("asks"))
+        best_bid = max((p for p, _ in bids), default=None)
+        best_ask = min((p for p, _ in asks), default=None)
+        if best_bid is not None and best_ask is not None:
+            mid = (best_bid + best_ask) / 2
+        elif best_bid is not None:
+            mid = best_bid
+        elif best_ask is not None:
+            mid = best_ask
+        else:
+            return None
+        return BookTop(best_bid=best_bid, best_ask=best_ask, mid=mid)
+    except Exception as e:
+        logger.debug(f"Order-book top fetch failed for token {token_id}: {e}")
+        return None
+
+
 def _parse_levels(raw) -> List[Tuple[float, float]]:
     """Parse [{'price','size'}, ...] into [(price, size)], dropping junk."""
     out: List[Tuple[float, float]] = []
