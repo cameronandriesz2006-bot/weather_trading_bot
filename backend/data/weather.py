@@ -148,9 +148,11 @@ def reload_station_bias() -> Dict[str, dict]:
 
 def get_station_bias(city_key: str, metric: str) -> float:
     """
-    Signed correction (deg F) to SUBTRACT from the model mean for this station.
-    Positive => the model runs warm. Returns 0.0 when disabled, missing, or
-    under-sampled, and is clamped to +/- WEATHER_BIAS_MAX_SHIFT_F for safety.
+    Signed correction to SUBTRACT from the model mean for this station, in the
+    city's NATIVE unit (°F for US, °C for international). Positive => the model
+    runs warm. Returns 0.0 when disabled, missing, or under-sampled, and is
+    clamped to +/- WEATHER_BIAS_MAX_SHIFT_F (scaled 1/1.8 for °C, since the cap is
+    defined in °F and a bias is a temperature *spread*).
     """
     from backend.config import settings
     if not settings.WEATHER_BIAS_ENABLED:
@@ -159,7 +161,8 @@ def get_station_bias(city_key: str, metric: str) -> float:
     if not entry or entry.get("samples", 0) < settings.WEATHER_BIAS_MIN_SAMPLES:
         return 0.0
     bias = float(entry.get("bias_f", 0.0))
-    cap = settings.WEATHER_BIAS_MAX_SHIFT_F
+    unit = CITY_CONFIG.get(city_key, {}).get("unit", "F")
+    cap = settings.WEATHER_BIAS_MAX_SHIFT_F * ((1.0 / 1.8) if unit == "C" else 1.0)
     return max(-cap, min(cap, bias))
 
 

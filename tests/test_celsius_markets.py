@@ -17,6 +17,12 @@ Run with the repo root on PYTHONPATH; runnable as a script (pytest optional).
 from datetime import date
 
 from backend.config import settings
+# These assert the pure °C bucket MATH (rounding interval, symmetry, σ scaling),
+# which must hold independent of any per-station bias. Disable the live station
+# bias so a real (e.g. London −0.16°C) correction doesn't shift the distribution
+# and break the symmetry assertions — bias correctness is tested separately in
+# tests/test_bias_correction.py.
+settings.WEATHER_BIAS_ENABLED = False
 from backend.data.weather import EnsembleForecast, CITY_CONFIG
 from backend.data.weather_markets import parse_bucket_label, parse_event_slug
 

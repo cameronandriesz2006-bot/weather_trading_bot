@@ -1,68 +1,167 @@
 {
-  "computed_at": "2026-06-13T09:51:04.549045",
+  "computed_at": "2026-06-14T07:54:25.985791",
   "window_days": 60,
-  "method": "gfs_seamless_vs_era5_archive",
-  "note": "bias_f = mean(forecast - actual); SUBTRACT from forecast mean.",
+  "method": "gfs_seamless_vs_meteostat_station_obs",
+  "note": "bias_f = mean(forecast - observed) in each city's NATIVE unit (F US / C intl); SUBTRACT from forecast mean before pricing.",
   "stations": {
     "nyc": {
+      "unit": "F",
+      "station": "72503",
       "high": {
-        "bias_f": -0.107,
-        "stdev_f": 1.808,
-        "samples": 61
+        "bias_f": 1.087,
+        "stdev_f": 1.975,
+        "samples": 63
       },
       "low": {
-        "bias_f": -1.151,
-        "stdev_f": 1.411,
-        "samples": 61
+        "bias_f": -1.78,
+        "stdev_f": 2.878,
+        "samples": 63
       }
     },
     "chicago": {
+      "unit": "F",
+      "station": "72530",
       "high": {
-        "bias_f": 0.934,
-        "stdev_f": 2.085,
-        "samples": 61
+        "bias_f": 0.782,
+        "stdev_f": 1.582,
+        "samples": 63
       },
       "low": {
-        "bias_f": -0.185,
-        "stdev_f": 2.458,
-        "samples": 61
+        "bias_f": -0.874,
+        "stdev_f": 2.561,
+        "samples": 63
       }
     },
     "miami": {
+      "unit": "F",
+      "station": "72202",
       "high": {
-        "bias_f": 0.374,
-        "stdev_f": 1.5,
-        "samples": 61
+        "bias_f": -0.945,
+        "stdev_f": 1.419,
+        "samples": 63
       },
       "low": {
-        "bias_f": 0.462,
-        "stdev_f": 1.614,
-        "samples": 61
+        "bias_f": -0.645,
+        "stdev_f": 1.478,
+        "samples": 63
       }
     },
     "los_angeles": {
+      "unit": "F",
+      "station": "72295",
       "high": {
-        "bias_f": 0.854,
-        "stdev_f": 1.641,
-        "samples": 61
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
       },
       "low": {
-        "bias_f": -1.262,
-        "stdev_f": 1.538,
-        "samples": 61
-      }
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "skipped": "source_inconsistent(5.1>2.0)"
     },
     "denver": {
+      "unit": "F",
+      "station": "KBKF0",
       "high": {
-        "bias_f": 0.4,
-        "stdev_f": 1.911,
-        "samples": 61
+        "bias_f": -1.024,
+        "stdev_f": 1.692,
+        "samples": 62
       },
       "low": {
-        "bias_f": -0.226,
-        "stdev_f": 2.125,
-        "samples": 61
+        "bias_f": 0.204,
+        "stdev_f": 1.948,
+        "samples": 62
       }
+    },
+    "london": {
+      "unit": "C",
+      "station": "EGLC0",
+      "high": {
+        "bias_f": -0.161,
+        "stdev_f": 0.935,
+        "samples": 62
+      },
+      "low": {
+        "bias_f": -0.644,
+        "stdev_f": 0.946,
+        "samples": 62
+      }
+    },
+    "tokyo": {
+      "unit": "C",
+      "station": "47671",
+      "high": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "low": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "skipped": "source_inconsistent(1.9>1.1)"
+    },
+    "seoul": {
+      "unit": "C",
+      "station": "47113",
+      "high": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "low": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "skipped": "source_inconsistent(5.1>1.1)"
+    },
+    "paris": {
+      "unit": "C",
+      "station": "07150",
+      "high": {
+        "bias_f": -0.394,
+        "stdev_f": 1.072,
+        "samples": 54
+      },
+      "low": {
+        "bias_f": 0.224,
+        "stdev_f": 1.284,
+        "samples": 54
+      }
+    },
+    "shanghai": {
+      "unit": "C",
+      "station": null,
+      "high": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "low": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "skipped": "no_obs_station"
+    },
+    "hong_kong": {
+      "unit": "C",
+      "station": "45007",
+      "high": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "low": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "skipped": "source_inconsistent(1.5>1.1)"
     }
   }
 }

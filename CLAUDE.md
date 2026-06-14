@@ -63,7 +63,34 @@ is **per-station forecast error vs the actual settlement station**, NOT an Open-
   `passes_threshold` with a reasoning note. Live: suppresses Paris/Shanghai/Miami/LA/NYC-warm events;
   actionable ~18→~14. The mean is the easy part the market nails same-day — a real edge must come from
   distribution SHAPE around a similar mean, not from disagreeing on the level by several degrees.
-- **Station-truth bias (issue 13)** — replace the ERA5 reference (see below) with realized station obs.
+- **Station-truth bias — DONE (issue 13).** The old bias backfill calibrated GFS against **ERA5
+  reanalysis**, but ERA5 is itself gridded and agrees with GFS to <1° while differing from the
+  official station by 2-3° (worst at coastal/microclimate stations a coarse grid can't resolve —
+  LAX, Miami). So the real gap (to the station the market settles on) went uncorrected. Now
+  `bias_backfill.py` uses **realized Meteostat station observations** (`d.meteostat.net` daily, current
+  + global + keyless) as the "actual", per the station nearest each market's settlement point, and
+  computes bias in each city's **native unit** (°F/°C). `get_station_bias` scales the safety cap by
+  1/1.8 for °C. Two guards make it robust:
+    - **Source-consistency guard.** The 60-day forecast history comes from historical-forecast-api,
+      but the bot trades on **ensemble-api**. For coastal coords those two APIs snap to different grid
+      cells and disagree by ~5° for the SAME `gfs_seamless` (historical-forecast is the *deterministic*
+      run; the live model is the *ensemble mean*). We only keep a city's bias if the two agree on the
+      most-recent 3 days within `CONSISTENCY_MAX_F` (2°F); else skip (the guardrail still covers it).
+      → kept: nyc/chicago/miami/denver/london/paris; **skipped (coastal): LA, Tokyo, Seoul, HK**;
+      shanghai skipped (no obs station within ~35km of ZSPD Pudong).
+    - Native-unit storage + the existing min-samples/clamp gates.
+  Run `python -m backend.data.bias_backfill`; writes `station_bias.json` (method
+  `gfs_seamless_vs_meteostat_station_obs`).
+
+#### STILL OPEN — σ too wide near settlement (the next mirage class)
+After #1+#2 the **mean-shift** mirages are gone, but a second class remains: events where our mean
+MATCHES the market (small gap) yet we assign far less probability to the market's favoured bucket —
+e.g. Tokyo 21°C (NO, net 50%, gap 1.0; market 80% vs our 27%) and NYC 78-79°F (NO, net 23%, gap 0.1;
+market 44% vs our 17%). Cause: our `sigma_eff` floor (2.0°F / 1.5°C, plus 0.7°F/lead-day) is too WIDE
+for a near-settlement high (which is nearly determined), so we stay diffuse while the market correctly
+concentrates. The mean-gap guardrail can't catch this (the mean agrees). **Do NOT blind-tune σ** — it
+needs the scoreboard / **intraday conditioning** (Phase 5/7+: condition on observed-so-far near
+settlement) to fix correctly. This is now the top forecast-correctness lever.
 
 ### Latest changes (2026-06-14, second pass)
 - **Min traded-volume gate — DONE.** Added `WEATHER_MIN_VOLUME` ($500) to

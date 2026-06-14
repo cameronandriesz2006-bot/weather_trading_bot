@@ -10,24 +10,40 @@ from backend.core.weather_signals import WeatherTradingSignal
 from backend.data.weather_markets import WeatherMarket
 
 
-def _market(liquidity=5000.0):
+def _market(liquidity=5000.0, volume=5000.0, event_market_mean=None):
     return WeatherMarket(
         slug="s", market_id="1", platform="polymarket", title="t",
         city_key="nyc", city_name="New York City", target_date=date(2026, 6, 12),
         metric="high", low_f=82, high_f=83, bucket_label="82-83°F",
         yes_price=0.5, no_price=0.5, spread=0.02, liquidity=liquidity,
+        volume=volume, event_market_mean=event_market_mean,
     )
 
 
-def _signal(net_edge, entry_price, liquidity=5000.0, rel_spread=0.04):
+def _signal(net_edge, entry_price, liquidity=5000.0, rel_spread=0.04,
+            volume=5000.0, event_market_mean=None, market_gap=None):
     return WeatherTradingSignal(
-        market=_market(liquidity), net_edge=net_edge, entry_price=entry_price,
-        rel_spread=rel_spread,
+        market=_market(liquidity, volume, event_market_mean),
+        net_edge=net_edge, entry_price=entry_price,
+        rel_spread=rel_spread, market_gap=market_gap,
     )
 
 
 def test_actionable_when_net_edge_and_entry_ok():
     assert _signal(net_edge=0.10, entry_price=0.50).passes_threshold is True
+
+
+def test_filtered_when_volume_below_min():
+    # Real resting liquidity but almost no actual trading -> phantom book, skip.
+    assert _signal(net_edge=0.20, entry_price=0.50, volume=70).passes_threshold is False
+
+
+def test_filtered_when_market_gap_too_large():
+    # Our forecast mean far from the market-implied mean -> we're miscalibrated.
+    big = settings.WEATHER_MAX_MARKET_GAP_F + 1.0
+    assert _signal(net_edge=0.20, entry_price=0.50, market_gap=big).passes_threshold is False
+    # A small gap still trades.
+    assert _signal(net_edge=0.20, entry_price=0.50, market_gap=0.5).passes_threshold is True
 
 
 def test_filtered_when_net_edge_below_threshold():
