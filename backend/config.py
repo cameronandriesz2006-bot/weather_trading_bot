@@ -96,6 +96,23 @@ class Settings(BaseSettings):
     WEATHER_SIGMA_FLOOR_F: float = 2.0        # irreducible uncertainty (deg F), even if unanimous
     WEATHER_SIGMA_PER_LEAD_DAY_F: float = 0.7  # extra uncertainty per day of lead time
 
+    # Intraday σ schedule (Phase 5). The flat σ-floor above is wrong in BOTH
+    # directions on the in-progress day: in the morning the day's extreme can still
+    # move several degrees (the floor is too CONFIDENT), and by evening it's nearly
+    # locked (the floor is far too UNSURE, so the bot won't commit when it should).
+    # backend/data/intraday_curve.json holds, per city/metric/LOCAL hour, the empirical
+    # std of (final daily extreme − extreme so far) from 10y of station obs — exactly
+    # the residual uncertainty at that hour. On the in-progress local day we use that
+    # std for sigma_eff instead of the flat floor (see EnsembleForecast._effective_sigma).
+    # Enabled 2026-06-14 (user decision). Live-validate the next time the Open-Meteo
+    # quota is back: evening highs should get confident, mornings stay unsure, and bet
+    # sizes must NOT blow up. _MIN is a HARD floor so σ can never collapse to ~0 and
+    # turn a tiny edge into an enormous Kelly bet — a KEY SAFETY RAIL. Defined in °F;
+    # scaled 1/1.8 for °C cities (a temperature spread). Do NOT hand-tune the curve
+    # numbers — they come from backend/data/intraday_backtest.py.
+    WEATHER_INTRADAY_SIGMA_ENABLED: bool = True
+    WEATHER_INTRADAY_SIGMA_MIN_F: float = 0.3
+
     # Per-station bias correction. Raw GFS has repeatable per-station offsets the
     # market has already priced in (e.g. ~2F cold on NYC overnight lows); left
     # uncorrected they masquerade as edge. We measure bias = mean(forecast - actual)

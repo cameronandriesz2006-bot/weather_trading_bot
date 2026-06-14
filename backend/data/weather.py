@@ -23,6 +23,12 @@ logger = logging.getLogger("trading_bot")
 # price each city ENTIRELY in its native unit — no temperature is ever converted,
 # so there is no conversion error to make. Polymarket settles from its own market
 # outcome (price-based), so the unit never enters settlement either.
+#
+# "tz" is the station's IANA timezone. Markets settle on the station's LOCAL calendar
+# day, so we need the local clock to (a) gate the observed-so-far floor and (b) look up
+# the intraday σ curve at the current local hour. zoneinfo is DST-aware (a real fix over
+# the longitude approximation, which is ~1h off under summer daylight time); we fall
+# back to the longitude estimate if the tz database is unavailable.
 # NOTE: Kalshi may settle on different stations; verify separately before enabling it.
 CITY_CONFIG: Dict[str, dict] = {
     "nyc": {
@@ -32,6 +38,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": -73.8800,
         "nws_station": "KLGA",
         "unit": "F",
+        "tz": "America/New_York",
     },
     "chicago": {
         "name": "Chicago",
@@ -40,6 +47,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": -87.9336,
         "nws_station": "KORD",
         "unit": "F",
+        "tz": "America/Chicago",
     },
     "miami": {
         "name": "Miami",
@@ -48,6 +56,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": -80.3164,
         "nws_station": "KMIA",
         "unit": "F",
+        "tz": "America/New_York",
     },
     "los_angeles": {
         "name": "Los Angeles",
@@ -56,6 +65,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": -118.3889,
         "nws_station": "KLAX",
         "unit": "F",
+        "tz": "America/Los_Angeles",
     },
     "denver": {
         "name": "Denver",
@@ -64,6 +74,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": -104.7517,
         "nws_station": "KBKF",
         "unit": "F",
+        "tz": "America/Denver",
     },
     # --- International cities (resolve in °C; high-liquidity books) --------------
     # Coordinates are the exact settlement station named in each market's
@@ -76,6 +87,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": 0.0495,
         "nws_station": None,
         "unit": "C",
+        "tz": "Europe/London",
     },
     "tokyo": {
         "name": "Tokyo",
@@ -84,6 +96,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": 139.7816,
         "nws_station": None,
         "unit": "C",
+        "tz": "Asia/Tokyo",
     },
     "seoul": {
         "name": "Seoul",
@@ -92,6 +105,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": 126.4505,
         "nws_station": None,
         "unit": "C",
+        "tz": "Asia/Seoul",
     },
     "paris": {
         "name": "Paris",
@@ -100,6 +114,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": 2.4414,
         "nws_station": None,
         "unit": "C",
+        "tz": "Europe/Paris",
     },
     "shanghai": {
         "name": "Shanghai",
@@ -108,6 +123,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": 121.8083,
         "nws_station": None,
         "unit": "C",
+        "tz": "Asia/Shanghai",
     },
     "hong_kong": {
         "name": "Hong Kong",
@@ -117,6 +133,7 @@ CITY_CONFIG: Dict[str, dict] = {
         "lon": 114.1742,
         "nws_station": None,
         "unit": "C",
+        "tz": "Asia/Hong_Kong",
     },
 }
 
@@ -184,6 +201,52 @@ def get_station_bias(city_key: str, metric: str) -> float:
     unit = CITY_CONFIG.get(city_key, {}).get("unit", "F")
     cap = settings.WEATHER_BIAS_MAX_SHIFT_F * ((1.0 / 1.8) if unit == "C" else 1.0)
     return max(-cap, min(cap, bias))
+
+
+# --- Intraday σ schedule (see backend/data/intraday_backtest.py) --------------
+# intraday_curve.json holds, per city -> metric (high/low) -> LOCAL hour, the
+# {mean, std, n} of (final daily extreme − extreme so far) from 10y of station obs.
+# The `std` is the empirical RESIDUAL uncertainty at that hour, in the city's native
+# unit — exactly the σ the forecast should carry on the in-progress local day
+# (wide in the morning, near-zero in the evening). Replaces the flat σ-floor there.
+_INTRADAY_FILE = Path(__file__).with_name("intraday_curve.json")
+_intraday_cache: Optional[Dict[str, dict]] = None
+
+
+def _load_intraday_curve() -> Dict[str, dict]:
+    """Load (and memoise) the intraday σ curve; {} if absent/unreadable."""
+    global _intraday_cache
+    if _intraday_cache is None:
+        try:
+            _intraday_cache = json.loads(_INTRADAY_FILE.read_text()).get("cities", {}) or {}
+        except Exception:
+            _intraday_cache = {}
+    return _intraday_cache
+
+
+def reload_intraday_curve() -> Dict[str, dict]:
+    """Drop the cache so a freshly-rebuilt intraday_curve.json is picked up."""
+    global _intraday_cache
+    _intraday_cache = None
+    return _load_intraday_curve()
+
+
+def intraday_sigma(city_key: str, metric: str, local_hour: int) -> Optional[float]:
+    """Empirical residual σ (native unit) of the still-to-come move in the daily
+    ``metric`` extreme at this station-LOCAL ``hour``, from intraday_curve.json.
+
+    Returns None when the city/metric/hour is absent (e.g. Shanghai has no curve, or
+    an hour with too few samples) so the caller falls back to the flat-floor σ. The
+    value is already in the city's native unit (no scaling) — it's a measured spread.
+    """
+    metric_curve = _load_intraday_curve().get(city_key, {}).get(metric)
+    if not isinstance(metric_curve, dict):
+        return None
+    entry = metric_curve.get(str(local_hour))
+    if not entry:
+        return None
+    std = entry.get("std")
+    return float(std) if std is not None else None
 
 
 @dataclass
@@ -257,20 +320,40 @@ class EnsembleForecast:
             return 1.0 if x >= mean else 0.0
         return 0.5 * (1.0 + math.erf((x - mean) / (sigma * math.sqrt(2.0))))
 
-    def _effective_sigma(self, raw_sigma: float) -> float:
+    def _effective_sigma(self, raw_sigma: float, metric: Optional[str] = None,
+                         local_hour: Optional[int] = None) -> float:
         """
         Widen the (under-dispersed) ensemble spread into an honest forecast sigma.
 
-        sigma_eff = max(raw_sigma * INFLATION, FLOOR) + lead_days * PER_LEAD_DAY
+        Default (future days, or intraday disabled/missing):
+            sigma_eff = max(raw_sigma * INFLATION, FLOOR) + lead_days * PER_LEAD_DAY
 
-        The FLOOR / PER_LEAD_DAY config constants are expressed in °F. For a °C
-        market every temperature here (raw_sigma included) is already in °C, so we
-        scale those two constants by 1/1.8 — the exact unit conversion for a
-        temperature *spread* (a difference, so no +32 offset). INFLATION is a unit-
-        less multiplier and is not scaled.
+        Intraday σ schedule (Phase 5): on the IN-PROGRESS local day, the empirical
+        residual-uncertainty curve IS the truth, so when a ``local_hour`` is supplied
+        (the caller passes one only on the station-local today) and the curve has a
+        value for this city/metric/hour, we use it directly:
+            sigma_eff = max(WEATHER_INTRADAY_SIGMA_MIN, intraday_std)
+        and SKIP the flat-floor/inflation/lead terms (the lead term is 0 today anyway;
+        the floor would only make us wrongly UNSURE in the evening — the bug this fixes).
+        The _MIN rail is a hard floor so σ can never collapse to ~0 and turn a tiny
+        edge into an enormous Kelly bet.
+
+        The FLOOR / PER_LEAD_DAY / _MIN config constants are expressed in °F. For a °C
+        market every temperature here (raw_sigma and the curve std included) is already
+        in °C, so we scale those constants by 1/1.8 — the exact conversion for a
+        temperature *spread* (a difference, no +32 offset). INFLATION is unitless. The
+        curve std is stored in native unit, so it is NOT scaled.
         """
         from backend.config import settings
         scale = (1.0 / 1.8) if self.unit == "C" else 1.0
+
+        if (settings.WEATHER_INTRADAY_SIGMA_ENABLED and metric is not None
+                and local_hour is not None):
+            curve_std = intraday_sigma(self.city_key, metric, local_hour)
+            if curve_std is not None:
+                sigma_min = settings.WEATHER_INTRADAY_SIGMA_MIN_F * scale
+                return max(sigma_min, curve_std)
+
         floor = settings.WEATHER_SIGMA_FLOOR_F * scale
         per_lead_day = settings.WEATHER_SIGMA_PER_LEAD_DAY_F * scale
         base = max(raw_sigma * settings.WEATHER_SIGMA_INFLATION, floor)
@@ -294,7 +377,9 @@ class EnsembleForecast:
     def _fitted_bucket_prob(self, mean: float, raw_sigma: float,
                             low_f: Optional[float], high_f: Optional[float],
                             floor: Optional[float] = None,
-                            ceiling: Optional[float] = None) -> float:
+                            ceiling: Optional[float] = None,
+                            metric: Optional[str] = None,
+                            local_hour: Optional[int] = None) -> float:
         """
         P(temperature in bucket) under a fitted, widened Normal, optionally censored
         at the observed-so-far hard bound (``floor`` for highs / ``ceiling`` for lows).
@@ -303,8 +388,12 @@ class EnsembleForecast:
         [low-0.5, high+0.5); open bounds extend to -/+ infinity. With a floor/ceiling,
         buckets that are now physically impossible (entirely past the observed extreme)
         correctly collapse to ~0 and the surviving mass piles at the observed value.
+
+        ``metric``/``local_hour`` feed the intraday σ schedule (see _effective_sigma):
+        on the in-progress local day the curve sets the width; the floor/ceiling above
+        still bounds the locked side, and the two compose cleanly.
         """
-        sigma = self._effective_sigma(raw_sigma)
+        sigma = self._effective_sigma(raw_sigma, metric=metric, local_hour=local_hour)
         lo = (low_f - 0.5) if low_f is not None else None
         hi = (high_f + 0.5) if high_f is not None else None
         p_lo = self._clamped_cdf(lo, mean, sigma, floor, ceiling) if lo is not None else 0.0
@@ -317,22 +406,28 @@ class EnsembleForecast:
         return raw - get_station_bias(self.city_key, metric)
 
     def probability_high_in_range(self, low_f: Optional[float], high_f: Optional[float],
-                                  floor: Optional[float] = None) -> float:
+                                  floor: Optional[float] = None,
+                                  local_hour: Optional[int] = None) -> float:
         """Probability the daily HIGH falls in the bucket (fitted, widened, bias-corrected).
-        ``floor`` = observed max so far today: the final high can't end below it."""
+        ``floor`` = observed max so far today: the final high can't end below it.
+        ``local_hour`` (station-local, in-progress day only) engages the intraday σ curve."""
         if not self.member_highs:
             return 0.5
         return self._fitted_bucket_prob(self.corrected_mean("high"), self.std_high,
-                                        low_f, high_f, floor=floor)
+                                        low_f, high_f, floor=floor,
+                                        metric="high", local_hour=local_hour)
 
     def probability_low_in_range(self, low_f: Optional[float], high_f: Optional[float],
-                                 ceiling: Optional[float] = None) -> float:
+                                 ceiling: Optional[float] = None,
+                                 local_hour: Optional[int] = None) -> float:
         """Probability the daily LOW falls in the bucket (fitted, widened, bias-corrected).
-        ``ceiling`` = observed min so far today: the final low can't end above it."""
+        ``ceiling`` = observed min so far today: the final low can't end above it.
+        ``local_hour`` (station-local, in-progress day only) engages the intraday σ curve."""
         if not self.member_lows:
             return 0.5
         return self._fitted_bucket_prob(self.corrected_mean("low"), self.std_low,
-                                        low_f, high_f, ceiling=ceiling)
+                                        low_f, high_f, ceiling=ceiling,
+                                        metric="low", local_hour=local_hour)
 
     @property
     def ensemble_agreement(self) -> float:
@@ -545,9 +640,34 @@ _LOW_SET_LOCAL_HOUR = 10    # ~10am local
 
 
 def _approx_local_now(lon: float) -> datetime:
-    """Rough station-local clock from longitude (15° per hour). Good enough for an
-    'is the extreme likely set yet' gate — we don't need exact timezone/DST."""
+    """Rough station-local clock from longitude (15° per hour). Fallback for when the
+    tz database is unavailable; ~1h off under summer daylight time (good enough for a
+    coarse 'is the extreme likely set yet' gate, but the intraday curve is keyed by
+    the exact local hour, so prefer station_local_now)."""
     return datetime.utcnow() + timedelta(hours=lon / 15.0)
+
+
+def station_local_now(city_key: str) -> datetime:
+    """Naive station-local datetime. Uses the city's IANA tz (DST-aware) when the
+    tz database resolves, else falls back to the longitude approximation. Returned
+    naive (no tzinfo) so date()/hour compare cleanly with our other naive dates."""
+    cfg = CITY_CONFIG.get(city_key, {})
+    tzname = cfg.get("tz")
+    if tzname:
+        try:
+            from zoneinfo import ZoneInfo
+            return datetime.now(ZoneInfo(tzname)).replace(tzinfo=None)
+        except Exception:
+            pass
+    return _approx_local_now(cfg.get("lon", 0.0))
+
+
+def station_local_hour(city_key: str, target_date: date) -> Optional[int]:
+    """Station-local hour (0-23) IF ``target_date`` is the in-progress local day at the
+    station, else None. The intraday σ curve only describes a day still unfolding, so
+    on past/future days the caller keeps the flat-floor σ."""
+    now = station_local_now(city_key)
+    return now.hour if target_date == now.date() else None
 
 
 async def fetch_observed_extreme(
@@ -575,7 +695,7 @@ async def fetch_observed_extreme(
     # local day AFTER the relevant extreme has typically occurred (else skip ->
     # uncensored forecast). This is what stops a morning overnight reading from
     # making the bot over-confident before the day's high has even happened.
-    local_now = _approx_local_now(CITY_CONFIG[city_key]["lon"])
+    local_now = station_local_now(city_key)
     local_date = local_now.date()
     if target_date > local_date:
         return None  # future local day: nothing observed yet

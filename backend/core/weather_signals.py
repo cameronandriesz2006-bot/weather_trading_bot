@@ -11,7 +11,7 @@ from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
 from backend.data.weather import (
     fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias,
-    fetch_observed_extreme,
+    fetch_observed_extreme, station_local_hour, intraday_sigma,
 )
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
 from backend.data.orderbook import (
@@ -197,12 +197,20 @@ async def generate_weather_signal(
     # unavailable (future date / no obs station) -> uncensored fallback.
     observed_bound = await fetch_observed_extreme(market.city_key, market.metric, market.target_date)
 
+    # Intraday σ schedule: on the in-progress local day, narrow (or widen) the forecast
+    # to the empirical residual uncertainty at the current station-local hour instead of
+    # the flat σ-floor. ``local_hour`` is None except on the station-local today, so
+    # future days keep the lead-time σ. None -> the prob fns use the old formula.
+    local_hour = station_local_hour(market.city_key, market.target_date)
+
     # Model YES probability = fraction of ensemble members whose daily high/low
     # lands in this market's temperature bucket.
     if market.metric == "high":
-        model_yes_prob = forecast.probability_high_in_range(market.low_f, market.high_f, floor=observed_bound)
+        model_yes_prob = forecast.probability_high_in_range(
+            market.low_f, market.high_f, floor=observed_bound, local_hour=local_hour)
     else:
-        model_yes_prob = forecast.probability_low_in_range(market.low_f, market.high_f, ceiling=observed_bound)
+        model_yes_prob = forecast.probability_low_in_range(
+            market.low_f, market.high_f, ceiling=observed_bound, local_hour=local_hour)
 
     # Light clip only to keep Kelly's odds math finite; do NOT inflate genuinely
     # tiny bucket probabilities (that would manufacture fake edges on dead buckets).
@@ -333,6 +341,14 @@ async def generate_weather_signal(
     if observed_bound is not None:
         kind = "floor" if market.metric == "high" else "ceil"
         ensemble_str += f" [obs {kind} {observed_bound:.1f}{u}]"
+    # Show the intraday sigma when the schedule is engaged (in-progress local day,
+    # curve present) — so live-validation can watch evening highs get confident and
+    # mornings stay appropriately unsure. ASCII only: this string is logged and stored,
+    # and the Windows log/console encoding (cp1252) can't render a Greek sigma.
+    if settings.WEATHER_INTRADAY_SIGMA_ENABLED and local_hour is not None:
+        isig = intraday_sigma(market.city_key, market.metric, local_hour)
+        if isig is not None:
+            ensemble_str += f" [sigma {isig:.1f}{u} @{local_hour}h local]"
 
     # Market-gap guardrail: how far our (bias-corrected) mean sits from the market-
     # implied mean for this event. A large gap => we're likely the miscalibrated one.

@@ -92,6 +92,110 @@ def test_observed_ceiling_for_lows():
                - fc.probability_low_in_range(68, 69)) < 1e-9
 
 
+# --- Intraday σ schedule (Phase 5) -------------------------------------------
+# On the in-progress LOCAL day the forecast width should track the empirical residual
+# uncertainty curve (wide in the morning, near-zero in the evening) instead of the
+# flat σ-floor; future days and missing-curve cities keep the old formula; a hard
+# _MIN rail keeps σ from collapsing to ~0.
+from backend.data.weather import (  # noqa: E402
+    intraday_sigma, reload_intraday_curve, station_local_hour, station_local_now,
+)
+
+reload_intraday_curve()  # load the on-disk curve the asserts below read
+
+
+def _set_intraday(**overrides):
+    """Apply intraday settings, returning the prior values for restoration."""
+    old = {k: getattr(settings, k) for k in overrides}
+    for k, v in overrides.items():
+        setattr(settings, k, v)
+    return old
+
+
+def _restore(old):
+    for k, v in old.items():
+        setattr(settings, k, v)
+
+
+def test_intraday_sigma_uses_curve_std():
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True, WEATHER_INTRADAY_SIGMA_MIN_F=0.3)
+    try:
+        fc = _fc([85.0] * 31)
+        curve7 = intraday_sigma("nyc", "high", 7)
+        assert curve7 is not None and curve7 > 1.0           # mornings are genuinely uncertain
+        # When the curve applies, the raw ensemble spread is irrelevant: σ == curve std.
+        assert abs(fc._effective_sigma(99.0, metric="high", local_hour=7) - curve7) < 1e-9
+    finally:
+        _restore(old)
+
+
+def test_intraday_sigma_shrinks_morning_to_evening():
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True, WEATHER_INTRADAY_SIGMA_MIN_F=0.3)
+    try:
+        fc = _fc([85.0] * 31)
+        morning = fc._effective_sigma(2.0, metric="high", local_hour=7)
+        evening = fc._effective_sigma(2.0, metric="high", local_hour=18)
+        assert morning > evening, (morning, evening)
+        # The sharper evening σ concentrates more mass in the modal bucket.
+        sharp = fc.probability_high_in_range(85, 86, local_hour=18)
+        diffuse = fc.probability_high_in_range(85, 86, local_hour=7)
+        assert sharp > diffuse, (sharp, diffuse)
+    finally:
+        _restore(old)
+
+
+def test_intraday_sigma_min_rail_holds():
+    # KEY SAFETY RAIL: σ can never collapse below _MIN, even at the most-locked hour
+    # (a near-zero σ would turn a tiny edge into an enormous Kelly bet).
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True, WEATHER_INTRADAY_SIGMA_MIN_F=100.0)
+    try:
+        fc = _fc([85.0] * 31)  # NYC (°F) -> rail scale 1.0
+        assert fc._effective_sigma(2.0, metric="high", local_hour=18) == 100.0
+    finally:
+        _restore(old)
+
+
+def test_intraday_disabled_or_no_hour_uses_old_sigma():
+    fc = _fc([85.0] * 31)  # same-day, unanimous -> old formula gives the flat floor
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=False)
+    try:
+        disabled = fc._effective_sigma(0.0, metric="high", local_hour=18)
+    finally:
+        _restore(old)
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True)
+    try:
+        enabled_no_hour = fc._effective_sigma(0.0, metric="high", local_hour=None)
+    finally:
+        _restore(old)
+    # No local_hour (future days / off-day) must bypass the curve entirely...
+    assert disabled == enabled_no_hour
+    # ...and that fallback is the flat σ-floor, NOT the tiny evening curve std.
+    assert abs(disabled - settings.WEATHER_SIGMA_FLOOR_F) < 1e-9
+
+
+def test_intraday_missing_curve_city_falls_back():
+    # Shanghai has no curve -> even with intraday on, σ uses the flat floor (°C-scaled).
+    sh = EnsembleForecast(
+        city_key="shanghai", city_name="Shanghai", target_date=date.today(),
+        member_highs=[30.0] * 31, member_lows=[24.0] * 31, unit="C",
+    )
+    assert intraday_sigma("shanghai", "high", 14) is None
+    old = _set_intraday(WEATHER_INTRADAY_SIGMA_ENABLED=True)
+    try:
+        eff = sh._effective_sigma(0.0, metric="high", local_hour=14)
+    finally:
+        _restore(old)
+    assert abs(eff - settings.WEATHER_SIGMA_FLOOR_F / 1.8) < 1e-9
+
+
+def test_station_local_hour_gate():
+    # Future date -> None (curve not engaged); the in-progress local day -> a real hour.
+    assert station_local_hour("nyc", date.today() + timedelta(days=3)) is None
+    today_local = station_local_now("nyc").date()
+    h = station_local_hour("nyc", today_local)
+    assert isinstance(h, int) and 0 <= h <= 23, h
+
+
 if __name__ == "__main__":
     for name, fn in list(globals().items()):
         if name.startswith("test_") and callable(fn):

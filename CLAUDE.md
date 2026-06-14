@@ -140,7 +140,29 @@ wildly over-confident before the day's high had even happened (observed Chicago 
 3am vs a 71.7°F forecast → 100% on a low bucket). This is the **safe half** of intraday conditioning:
 it bounds the side that's already determined, using only a hard fact.
 
-#### NEXT TO BUILD — intraday σ schedule (data is ready; spec below)
+#### Intraday σ schedule — DONE (gated off pending live validation; spec below)
+**Implemented (2026-06-14).** `intraday_curve.json` is loaded in `weather.py`
+(`_load_intraday_curve` + `reload_intraday_curve`, cached like `station_bias.json`);
+`intraday_sigma(city, metric, local_hour)` returns the curve `std` in native unit (None for
+Shanghai / missing hours). `EnsembleForecast._effective_sigma(raw_sigma, metric, local_hour)`:
+when intraday is enabled AND a `local_hour` is supplied (the caller passes one ONLY on the
+station-local in-progress day) AND the curve has a value, it returns
+`max(WEATHER_INTRADAY_SIGMA_MIN_F·scale, curve_std)` and skips the flat-floor/inflation/lead
+terms; otherwise the old formula is unchanged. `metric`+`local_hour` are threaded through
+`probability_high|low_in_range` → `_fitted_bucket_prob`. `generate_weather_signal` computes the
+hour via `station_local_hour(city, target_date)` and passes it; reasoning shows
+`[sigma X @Nh local]`. Config gates: `WEATHER_INTRADAY_SIGMA_ENABLED` (default **False**) and
+`WEATHER_INTRADAY_SIGMA_MIN_F` (0.3°F, scaled 1/1.8 for °C — the safety rail). Local hour now
+comes from the real station tz (`tz` added to `CITY_CONFIG`; DST-aware `zoneinfo` via
+`station_local_now`, longitude-approx fallback); the observed-floor was switched to the SAME
+clock so the two agree (this makes the floor's 4pm/10am gate fire at true local time, ~1h earlier
+than the old longitude estimate under summer DST — strictly more correct, still conservative).
+Tests: `tests/test_forecast_distribution.py` (curve std applied, shrinks morning→evening, _MIN
+rail, None/future falls back to old σ, missing-curve city falls back, local-hour gate). Verified
+live data: NYC high σ schedule `{6h:5.1 … 18h:0.3 … 21h:0.08}`, P(modal bucket) 0.16 @7am →
+0.94 @6pm. **To activate:** flip `WEATHER_INTRADAY_SIGMA_ENABLED=True` and live-validate per the
+caveats below (watch evening confidence rise, mornings stay unsure, and bet sizes not blow up).
+
 **Problem (recap).** Our forecast carries a flat minimum doubt (`WEATHER_SIGMA_FLOOR_F` = 2.0°F,
 scaled 1/1.8 for °C). The backtest proved that's wrong in BOTH directions: at 7am the real
 uncertainty in NYC's high is ±4.9°F (bot is secretly OVER-confident), and by 6pm it's ±0.3°F (bot is
