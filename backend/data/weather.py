@@ -351,8 +351,17 @@ class EnsembleForecast:
 # and never recovers. Successful forecasts are held for _CACHE_TTL; failures only
 # for _FAIL_TTL, so a recovered API is retried within the minute.
 _forecast_cache: Dict[str, tuple] = {}
-_CACHE_TTL = 900       # 15 minutes (successful forecast)
-_FAIL_TTL = 60         # 1 minute (negative cache for a failed fetch)
+# Open-Meteo's free tier is ~10,000 requests/DAY (per IP). With ~33 unique
+# (city, date) forecasts, a 30-min cache costs ~1,600/day — a comfortable 6x
+# margin (a 15-min cache was ~3,200/day, still safe, but day-of testing + the old
+# failure-cascade blew past 10k and exhausted the quota until the next UTC day).
+_CACHE_TTL = 1800      # 30 minutes (successful forecast) — daily-temp forecasts
+                       # barely move in 30 min, and the observed-floor adds intraday
+                       # freshness near settlement.
+# When a fetch FAILS (e.g. the daily limit is hit), back off for a while instead
+# of retrying every scan — that both saves pointless load and avoids keeping a
+# rolling-window limit pegged. Recovery is still noticed within this interval.
+_FAIL_TTL = 600        # 10 minutes (negative cache / backoff for a failed fetch)
 
 
 def _celsius_to_fahrenheit(c: float) -> float:
