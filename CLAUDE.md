@@ -13,6 +13,41 @@ and bets when its probability differs from the market's by more than an edge thr
 Position sizing is fractional Kelly. A FastAPI backend runs the scan/settlement loop and
 serves a React dashboard.
 
+## In plain English: what keeps the bot accurate (the safeguards)
+
+The bot makes its own weather forecast, turns it into "the chance the temperature lands in
+each bucket," and bets when that differs from the market's price. The danger: if OUR forecast
+is wrong, we *think* the market is mispriced when really WE are — and we lose. Every safeguard
+below exists to make sure we only bet when we genuinely know something, not when our own
+mistakes make a fake "edge" appear:
+
+1. **Only trade real markets (volume gate).** Skip "ghost town" markets where the prices look
+   real but almost nobody has actually traded — those quotes can vanish or be one lone player.
+2. **Use the real, live price (CLOB order book), not a stale one.** The old price source could be
+   ~20¢ out of date (the Shanghai 42¢-vs-70¢ you caught). We now read the live order book — the
+   prices you'd actually get — both for deciding edges and for showing each bet's current value.
+3. **Pay the real price, including slippage.** Instead of pretending we buy everything at the best
+   price, we walk the actual offers and pay the true average. "Edges" that only exist if you ignore
+   this correctly disappear.
+4. **Correct the forecast against the real thermometer (station-truth bias).** Our forecast ran a
+   couple degrees off at some stations. We now measure that against the *actual recorded
+   temperatures* at each city's official station and subtract it — and auto-skip cities where that
+   measurement is unreliable (mostly coastal ones).
+5. **The big one — don't argue with the market about the basic temperature (market-gap guardrail).**
+   If our forecast's overall temperature disagrees with what the market expects by more than ~2°,
+   we refuse to trade that event. The market nails the basic temperature; a 3° disagreement almost
+   always means WE are wrong, so that "huge edge" is a mirage. This kills most of the insane edges.
+
+Net effect: far fewer trades, but each one is on a real/liquid market, at the true live price, with
+a forecast corrected to the real station, and only where we broadly agree with the market on the
+basic temperature. That's the only honest path to a real edge.
+
+**One known weakness still open:** near the end of the day the bot spreads its bets across too many
+temperature buckets (it's less confident than it should be when the day's high is nearly locked in),
+which can still produce some bad bets. We're deliberately leaving it so the scoreboard can prove
+whether it loses money — that evidence is what will tell us how to fix it (σ re-tune / intraday
+conditioning). See "STILL OPEN — σ too wide near settlement" below.
+
 ## Hard constraints (do not violate)
 
 - **SIMULATION ONLY.** `SIMULATION_MODE` must stay `True` (`backend/config.py`). Never
