@@ -99,6 +99,13 @@ class Settings(BaseSettings):
     # stake). Replaces the old fixed $2,000 allocation / $10 min.
     WEATHER_MAX_ALLOCATION_FRACTION: float = 0.20   # <= 20% of bankroll in open weather bets (~$2,000 @ $10k)
     WEATHER_MIN_TRADE_FRACTION: float = 0.001       # min stake 0.1% of bankroll (~$10 @ $10k)
+    # Correlated-risk cap. Every bucket of the SAME city+day hinges on one forecast,
+    # so they can all win or lose together; the high and low of a city share the same
+    # air mass too. Limit total OPEN stake on any single city+day so the 20% allocation
+    # can't pile onto a single weather outcome. Default chosen by the auditor (~one full
+    # position per city/day, forcing diversification across >=3 cities to use the full
+    # allocation); tune to your risk appetite.
+    WEATHER_MAX_CITY_DAY_FRACTION: float = 0.07     # <= 7% of bankroll on one city+day (~$700 @ $10k)
 
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the

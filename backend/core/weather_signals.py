@@ -17,7 +17,7 @@ from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather
 from backend.data.orderbook import (
     fetch_ask_levels, walk_asks_for_cash, fetch_book_top, fetch_books, LiveBook,
 )
-from backend.models.database import SessionLocal, Signal
+from backend.models.database import SessionLocal, Signal, Trade
 
 logger = logging.getLogger("trading_bot")
 
@@ -439,13 +439,36 @@ def _current_bankroll() -> float:
     return settings.INITIAL_BANKROLL
 
 
+def _available_bankroll() -> float:
+    """Live bankroll MINUS capital already committed to open weather positions, so
+    Kelly sizes off genuinely FREE cash. Open stakes aren't debited until settlement,
+    so the raw bankroll overstates what's actually free to bet — sizing off it
+    over-bets once positions are on. Falls back to INITIAL_BANKROLL on any error."""
+    from sqlalchemy import func
+    db = SessionLocal()
+    try:
+        from backend.models.database import BotState
+        state = db.query(BotState).first()
+        bankroll = float(state.bankroll) if (state and state.bankroll and state.bankroll > 0) \
+            else settings.INITIAL_BANKROLL
+        open_exposure = db.query(func.coalesce(func.sum(Trade.size), 0.0)).filter(
+            Trade.settled == False, Trade.market_type == "weather",
+        ).scalar() or 0.0
+        return max(0.0, bankroll - float(open_exposure))
+    except Exception as e:
+        logger.debug(f"available-bankroll calc failed, using initial: {e}")
+        return settings.INITIAL_BANKROLL
+    finally:
+        db.close()
+
+
 async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     """
     Scan weather markets and generate ensemble-based signals.
     """
     signals = []
 
-    bankroll = _current_bankroll()
+    bankroll = _available_bankroll()
     city_keys = [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()]
 
     logger.info("=" * 50)

@@ -115,6 +115,25 @@ async def weather_scan_and_trade_job():
                     f"Stopping weather trades.")
                 return
 
+            # Correlated-risk + open-position caps. Buckets of the same city+day all
+            # hinge on one forecast (and a city's high/low share an air mass), so cap
+            # how much OPEN stake can ride on any single city+day; also enforce the
+            # global cap on the number of open positions.
+            max_city_day = settings.WEATHER_MAX_CITY_DAY_FRACTION * state.bankroll
+            open_weather = db.query(Trade).filter(
+                Trade.settled == False,
+                Trade.market_type == "weather",
+            ).all()
+            open_count = len(open_weather)
+            from collections import defaultdict
+            from backend.data.weather_markets import parse_event_slug
+            city_day_exposure = defaultdict(float)
+            for t in open_weather:
+                parsed = parse_event_slug(t.event_slug or "")
+                if parsed:
+                    ck, _m, td = parsed
+                    city_day_exposure[(ck, td)] += float(t.size or 0.0)
+
             trades_executed = 0
             # Iterate ALL actionable signals (sorted by edge), skipping markets we
             # already hold, and place up to MAX_TRADES_PER_SCAN *new* trades.
@@ -123,6 +142,10 @@ async def weather_scan_and_trade_job():
             # reached the other actionable buckets below them.)
             for signal in actionable:
                 if trades_executed >= MAX_TRADES_PER_SCAN:
+                    break
+                if open_count >= settings.MAX_TOTAL_PENDING_TRADES:
+                    log_event("info", f"Max open weather trades reached "
+                              f"({open_count}/{settings.MAX_TOTAL_PENDING_TRADES})")
                     break
 
                 # Skip markets we already have an open trade in.
@@ -145,6 +168,14 @@ async def weather_scan_and_trade_job():
                     break
                 if trade_size > remaining_allocation:
                     trade_size = remaining_allocation
+
+                # Correlated-risk cap: limit total open stake on this city+day.
+                cd_key = (signal.market.city_key, signal.market.target_date)
+                cd_room = max_city_day - city_day_exposure[cd_key]
+                if cd_room < min_trade_size:
+                    continue   # this city+day is already at its cap; try another
+                if trade_size > cd_room:
+                    trade_size = cd_room
 
                 if state.bankroll < min_trade_size:
                     log_event("warning", f"Bankroll too low: ${state.bankroll:.2f}")
@@ -185,6 +216,8 @@ async def weather_scan_and_trade_job():
                 state.total_trades += 1
                 trades_executed += 1
                 remaining_allocation -= trade_size
+                city_day_exposure[cd_key] += trade_size
+                open_count += 1
 
                 log_event("trade",
                     f"WX {signal.market.city_name}: {signal.direction.upper()} "
