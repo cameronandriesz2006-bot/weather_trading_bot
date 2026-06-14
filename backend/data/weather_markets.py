@@ -88,6 +88,10 @@ class WeatherMarket:
     token_id_yes: Optional[str] = None
     token_id_no: Optional[str] = None
     closed: bool = False
+    # Market-implied mean for the whole EVENT this bucket belongs to (probability-
+    # weighted center of all the event's bucket prices, in native unit). Filled in
+    # by the scan after live prices are refreshed; used by the market-gap guardrail.
+    event_market_mean: Optional[float] = None
 
     @property
     def threshold_f(self) -> float:

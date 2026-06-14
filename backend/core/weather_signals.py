@@ -51,19 +51,69 @@ class WeatherTradingSignal:
     ensemble_std: float = 0.0
     ensemble_members: int = 0
 
+    # Market-gap guardrail: |our corrected forecast mean - market-implied mean| in
+    # native unit (None if the event lacked enough buckets to compute it).
+    market_gap: Optional[float] = None
+
+    @property
+    def market_gap_ok(self) -> bool:
+        """True if our forecast mean is close enough to the market-implied mean to
+        trust our edge. A large gap means WE are likely miscalibrated (wrong station
+        / uncorrected bias), so the edge is a mirage — suppress the whole event."""
+        if not settings.WEATHER_MARKET_GAP_ENABLED or self.market_gap is None:
+            return True
+        scale = (1.0 / 1.8) if getattr(self.market, "unit", "F") == "C" else 1.0
+        return self.market_gap <= settings.WEATHER_MAX_MARKET_GAP_F * scale
+
     @property
     def passes_threshold(self) -> bool:
         """Actionable only if, after costs, the edge clears the threshold, the
-        effective entry price is within the cap, AND the market is real enough to
-        trade: enough resting liquidity, enough actually-traded volume, and a
-        tight-enough relative spread (Layer 1)."""
+        effective entry price is within the cap, the market is real enough to trade
+        (enough resting liquidity, enough actually-traded volume, tight-enough
+        relative spread — Layer 1), AND our forecast mean isn't wildly off the
+        market-implied mean (the market-gap guardrail)."""
         return (
             self.net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
             and 0 < self.entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
             and self.market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
             and self.market.volume >= settings.WEATHER_MIN_VOLUME
             and self.rel_spread <= settings.WEATHER_MAX_REL_SPREAD
+            and self.market_gap_ok
         )
+
+
+def compute_event_market_means(markets: List[WeatherMarket]) -> None:
+    """Set ``event_market_mean`` on every market from its event's bucket prices.
+
+    The market-implied mean is the probability-weighted center of an event's
+    buckets: sum(midpoint * yes_price) / sum(yes_price), over the buckets with a
+    finite range (open-ended tails have no midpoint and are skipped). On a near-
+    settlement day this is a near-truth estimate of where the high/low will land,
+    so the guardrail can compare it to our forecast mean. Call AFTER live prices
+    are refreshed. Events with fewer than the configured minimum of finite buckets
+    are left as None (implied mean not trustworthy -> guardrail is a no-op there).
+    """
+    from collections import defaultdict
+    events: Dict[tuple, List[WeatherMarket]] = defaultdict(list)
+    for m in markets:
+        events[(m.city_key, m.target_date, m.metric)].append(m)
+
+    for bucket_list in events.values():
+        num = den = 0.0
+        n_finite = 0
+        for m in bucket_list:
+            if m.low_f is None or m.high_f is None:
+                continue  # open tail: undefined midpoint
+            price = m.yes_price
+            if price is None or price <= 0:
+                continue
+            midpoint = (m.low_f + m.high_f) / 2.0
+            num += midpoint * price
+            den += price
+            n_finite += 1
+        implied = (num / den) if (den > 0 and n_finite >= settings.WEATHER_MARKET_GAP_MIN_BUCKETS) else None
+        for m in bucket_list:
+            m.event_market_mean = implied
 
 
 def _apply_live_top(market: WeatherMarket, top) -> bool:
@@ -271,12 +321,23 @@ async def generate_weather_signal(
     if abs(bias) >= 0.05:
         ensemble_str = f"{mean_val:.1f}{u} (bias {bias:+.1f} -> {mean_val - bias:.1f}{u})"
 
+    # Market-gap guardrail: how far our (bias-corrected) mean sits from the market-
+    # implied mean for this event. A large gap => we're likely the miscalibrated one.
+    corrected_mean_val = mean_val - bias
+    market_gap = None
+    gap_threshold = settings.WEATHER_MAX_MARKET_GAP_F * ((1.0 / 1.8) if u == "C" else 1.0)
+    if settings.WEATHER_MARKET_GAP_ENABLED and market.event_market_mean is not None:
+        market_gap = abs(corrected_mean_val - market.event_market_mean)
+    market_gap_ok = market_gap is None or market_gap <= gap_threshold
+
     # Build reasoning — mirror passes_threshold exactly so the recorded note
     # explains precisely why a bucket was or wasn't actionable.
     actionable = (net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
                   and 0 < entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
                   and market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
-                  and rel_spread <= settings.WEATHER_MAX_REL_SPREAD)
+                  and market.volume >= settings.WEATHER_MIN_VOLUME
+                  and rel_spread <= settings.WEATHER_MAX_REL_SPREAD
+                  and market_gap_ok)
     filter_notes = []
     if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
         filter_notes.append(f"entry {entry_price:.0%} > {settings.WEATHER_MAX_ENTRY_PRICE:.0%}")
@@ -284,8 +345,15 @@ async def generate_weather_signal(
         filter_notes.append(f"net edge {net_edge:.1%} < {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}")
     if market.liquidity < settings.WEATHER_MIN_LIQUIDITY:
         filter_notes.append(f"liq ${market.liquidity:.0f} < ${settings.WEATHER_MIN_LIQUIDITY:.0f}")
+    if market.volume < settings.WEATHER_MIN_VOLUME:
+        filter_notes.append(f"vol ${market.volume:.0f} < ${settings.WEATHER_MIN_VOLUME:.0f}")
     if rel_spread > settings.WEATHER_MAX_REL_SPREAD:
         filter_notes.append(f"rel-spread {rel_spread:.0%} > {settings.WEATHER_MAX_REL_SPREAD:.0%}")
+    if not market_gap_ok:
+        filter_notes.append(
+            f"market-gap {market_gap:.1f}{u} > {gap_threshold:.1f}{u} "
+            f"(ours {corrected_mean_val:.1f} vs mkt {market.event_market_mean:.1f})"
+        )
     filter_note = f" [{', '.join(filter_notes)}]" if filter_notes else ""
 
     fill_note = ""
@@ -322,6 +390,7 @@ async def generate_weather_signal(
         ensemble_mean=mean_val,
         ensemble_std=std_val,
         ensemble_members=forecast.num_members,
+        market_gap=market_gap,
     )
 
 
@@ -411,6 +480,11 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
             logger.info(f"Live prices: refreshed {refreshed}/{len(markets)} markets from CLOB book")
         except Exception as e:
             logger.warning(f"Batch live-price refresh failed, using Gamma prices: {e}")
+
+        # With live prices in hand, compute each event's market-implied mean so the
+        # market-gap guardrail can suppress events where our forecast mean is far
+        # from the market's (almost always us being miscalibrated, not free money).
+        compute_event_market_means(markets)
 
         async def _gen(market: WeatherMarket) -> Optional[WeatherTradingSignal]:
             async with sem:

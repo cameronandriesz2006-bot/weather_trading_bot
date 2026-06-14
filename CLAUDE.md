@@ -49,6 +49,22 @@ Model-correctness + cost work (Phases 1–7) is done. We are now in **Phase 7
 **current-model** trades (liquidity/spread-gated, bias-corrected, cash-staked). Let it run
 and read the scoreboard.
 
+### Forecast-calibration work (2026-06-14, third pass)
+The bot was producing many large (20-40%) edges that were **mostly mirages that would LOSE**:
+our forecast mean sits up to ±3° off the **market-implied mean** per station (NYC/LA warm,
+Miami/Paris cold), and on 1°C/2°F buckets a 2-3° shift manufactures a huge fake edge. Root cause
+is **per-station forecast error vs the actual settlement station**, NOT an Open-Meteo bug. Two fixes:
+- **Market-gap guardrail — DONE (issue 12).** The market-implied mean (probability-weighted center
+  of the live bucket prices) is a near-truth estimate of the settling value on a near-settlement day.
+  If our bias-corrected forecast mean differs from it by more than `WEATHER_MAX_MARKET_GAP_F` (2.0°F,
+  scaled 1/1.8 for °C), we suppress the WHOLE event — we're almost certainly the miscalibrated one,
+  not holding free money. `compute_event_market_means` (scan, post-live-price) sets
+  `WeatherMarket.event_market_mean`; `WeatherTradingSignal.market_gap`/`market_gap_ok` gate it in
+  `passes_threshold` with a reasoning note. Live: suppresses Paris/Shanghai/Miami/LA/NYC-warm events;
+  actionable ~18→~14. The mean is the easy part the market nails same-day — a real edge must come from
+  distribution SHAPE around a similar mean, not from disagreeing on the level by several degrees.
+- **Station-truth bias (issue 13)** — replace the ERA5 reference (see below) with realized station obs.
+
 ### Latest changes (2026-06-14, second pass)
 - **Min traded-volume gate — DONE.** Added `WEATHER_MIN_VOLUME` ($500) to
   `passes_threshold` (`weather_signals.py`). **Liquidity ≠ volume:** liquidity is $ *resting*

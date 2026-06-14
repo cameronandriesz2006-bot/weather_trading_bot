@@ -105,6 +105,19 @@ class Settings(BaseSettings):
     WEATHER_BIAS_MIN_SAMPLES: int = 10        # don't correct on noise: need this many obs
     WEATHER_BIAS_MAX_SHIFT_F: float = 4.0     # safety cap on the correction magnitude (deg F)
 
+    # Market-gap guardrail. The market-implied mean (probability-weighted center of
+    # the live bucket prices) is, on a near-settlement day, a near-truth estimate of
+    # where the high/low will land. If OUR forecast mean disagrees with it by more
+    # than this, we're almost certainly the miscalibrated one (wrong station / un-
+    # corrected bias) and the resulting "edge" is a mirage that would lose — so we
+    # SUPPRESS trading that whole event rather than bet into our own error. The mean
+    # is the easy part the market nails same-day; a real edge should come from the
+    # distribution SHAPE around a similar mean, not from disagreeing on the level by
+    # several degrees. Expressed in °F; scaled by 1/1.8 for °C cities (a spread).
+    WEATHER_MARKET_GAP_ENABLED: bool = True
+    WEATHER_MAX_MARKET_GAP_F: float = 2.0
+    WEATHER_MARKET_GAP_MIN_BUCKETS: int = 3   # need this many finite buckets to trust the implied mean
+
     class Config:
         env_file = ".env"
         extra = "ignore"  # tolerate leftover/unknown keys in .env (e.g. removed BTC settings)
