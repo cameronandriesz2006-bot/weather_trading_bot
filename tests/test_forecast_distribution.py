@@ -6,6 +6,10 @@ the mean, and longer lead times spread the distribution wider.
 """
 from datetime import date, timedelta
 
+from backend.config import settings
+# These assert the pure distribution MATH; keep them independent of any live
+# per-station bias (tested separately in tests/test_bias_correction.py).
+settings.WEATHER_BIAS_ENABLED = False
 from backend.data.weather import EnsembleForecast
 
 
@@ -52,6 +56,40 @@ def test_longer_lead_time_widens_distribution():
     future = _fc(members, target_date=date.today() + timedelta(days=4))
     # Wider sigma spreads mass out of the modal bucket.
     assert future.probability_high_in_range(85, 86) < today.probability_high_in_range(85, 86)
+
+
+# --- Observed-so-far hard bound (intraday floor/ceiling) ---------------------
+
+def test_observed_floor_zeros_impossible_buckets_and_concentrates():
+    # Forecast centered ~86, but the day has ALREADY hit 88 -> final high >= 88.
+    fc = _fc([84, 85, 86, 87, 88] * 6)
+    # Buckets entirely below the observed high are now physically impossible:
+    assert fc.probability_high_in_range(84, 85, floor=88.0) == 0.0
+    assert fc.probability_high_in_range(86, 87, floor=88.0) == 0.0
+    # The bucket holding the observed high soaks up the piled mass:
+    assert fc.probability_high_in_range(88, 89, floor=88.0) > 0.8
+    # Buckets above the floor are unchanged:
+    assert abs(fc.probability_high_in_range(90, 91, floor=88.0)
+               - fc.probability_high_in_range(90, 91)) < 1e-9
+
+
+def test_observed_floor_buckets_still_sum_to_one():
+    fc = _fc([84, 85, 86, 87, 88] * 6)
+    buckets = [(None, 83), (84, 85), (86, 87), (88, 89), (90, 91), (92, None)]
+    total = sum(fc.probability_high_in_range(lo, hi, floor=88.0) for lo, hi in buckets)
+    assert abs(total - 1.0) < 1e-9, total
+
+
+def test_observed_ceiling_for_lows():
+    # Final LOW can't be above the min already recorded today (70).
+    fc = _fc([68, 69, 70, 71, 72] * 6)  # _fc sets member_lows == member_highs
+    assert fc.probability_low_in_range(72, 73, ceiling=70.0) == 0.0   # impossible
+    # The bucket holding the ceiling gains the piled mass:
+    assert (fc.probability_low_in_range(70, 71, ceiling=70.0)
+            > fc.probability_low_in_range(70, 71))
+    # Below the ceiling unchanged:
+    assert abs(fc.probability_low_in_range(68, 69, ceiling=70.0)
+               - fc.probability_low_in_range(68, 69)) < 1e-9
 
 
 if __name__ == "__main__":

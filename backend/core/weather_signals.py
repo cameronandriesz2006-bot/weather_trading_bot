@@ -9,7 +9,10 @@ import httpx
 
 from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
-from backend.data.weather import fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias
+from backend.data.weather import (
+    fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias,
+    fetch_observed_extreme,
+)
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
 from backend.data.orderbook import (
     fetch_ask_levels, walk_asks_for_cash, fetch_book_top, fetch_books, LiveBook,
@@ -187,12 +190,19 @@ async def generate_weather_signal(
     if not forecast or not forecast.member_highs:
         return None
 
+    # Observed-so-far hard bound: the final high can't end below the max already
+    # recorded today, nor the low above the min. Censor the forecast at it so the
+    # bot stops finding fake edges on outcomes that are already physically
+    # impossible (the "1 hour to close, high already locked in" case). None when
+    # unavailable (future date / no obs station) -> uncensored fallback.
+    observed_bound = await fetch_observed_extreme(market.city_key, market.metric, market.target_date)
+
     # Model YES probability = fraction of ensemble members whose daily high/low
     # lands in this market's temperature bucket.
     if market.metric == "high":
-        model_yes_prob = forecast.probability_high_in_range(market.low_f, market.high_f)
+        model_yes_prob = forecast.probability_high_in_range(market.low_f, market.high_f, floor=observed_bound)
     else:
-        model_yes_prob = forecast.probability_low_in_range(market.low_f, market.high_f)
+        model_yes_prob = forecast.probability_low_in_range(market.low_f, market.high_f, ceiling=observed_bound)
 
     # Light clip only to keep Kelly's odds math finite; do NOT inflate genuinely
     # tiny bucket probabilities (that would manufacture fake edges on dead buckets).
@@ -320,6 +330,9 @@ async def generate_weather_signal(
     ensemble_str = f"{mean_val:.1f}{u}"
     if abs(bias) >= 0.05:
         ensemble_str = f"{mean_val:.1f}{u} (bias {bias:+.1f} -> {mean_val - bias:.1f}{u})"
+    if observed_bound is not None:
+        kind = "floor" if market.metric == "high" else "ceil"
+        ensemble_str += f" [obs {kind} {observed_bound:.1f}{u}]"
 
     # Market-gap guardrail: how far our (bias-corrected) mean sits from the market-
     # implied mean for this event. A large gap => we're likely the miscalibrated one.
@@ -453,6 +466,15 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
             await fetch_ensemble_forecast(city_key_, target_date_)
         except Exception:
             pass
+
+    # Pre-warm the observed-so-far bound (one call per unique city/date/metric),
+    # concurrently — so the per-bucket pass below hits a warm cache instead of
+    # stampeding Meteostat. Only the combos that actually appear are fetched.
+    obs_combos = {(m.city_key, m.target_date, m.metric) for m in markets}
+    await asyncio.gather(
+        *[fetch_observed_extreme(ck, mt, td) for (ck, td, mt) in obs_combos],
+        return_exceptions=True,
+    )
 
     # Generate signals concurrently (bounded), sharing ONE pooled HTTP client for
     # all the order-book fetches. Each candidate walks the live book; with the

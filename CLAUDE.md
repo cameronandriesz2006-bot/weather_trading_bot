@@ -42,11 +42,16 @@ Net effect: far fewer trades, but each one is on a real/liquid market, at the tr
 a forecast corrected to the real station, and only where we broadly agree with the market on the
 basic temperature. That's the only honest path to a real edge.
 
-**One known weakness still open:** near the end of the day the bot spreads its bets across too many
-temperature buckets (it's less confident than it should be when the day's high is nearly locked in),
-which can still produce some bad bets. We're deliberately leaving it so the scoreboard can prove
-whether it loses money — that evidence is what will tell us how to fix it (σ re-tune / intraday
-conditioning). See "STILL OPEN — σ too wide near settlement" below.
+6. **Don't bet on temperatures that already can't happen (observed-so-far floor).** Late in the day
+   the high/low is mostly settled by what's already on the thermometer. The bot now reads today's
+   temperature so far and refuses to bet as if the high could finish *below* what's already happened
+   (or the low *above* it) — but only once that extreme has actually occurred (afternoon for highs,
+   late morning for lows), so a cool overnight reading can't fool it in the morning.
+
+**One known weakness still open:** the floor above handles the *locked-in* side, but the bot can still
+be over-eager about the temperature climbing *higher* than it really will once the afternoon peak has
+passed. That last piece needs the scoreboard data to fix safely (it's about *how much more* it can
+climb, which we don't want to guess). See "STILL OPEN — σ too wide on the UPPER side" below.
 
 ## Hard constraints (do not violate)
 
@@ -117,15 +122,32 @@ is **per-station forecast error vs the actual settlement station**, NOT an Open-
   Run `python -m backend.data.bias_backfill`; writes `station_bias.json` (method
   `gfs_seamless_vs_meteostat_station_obs`).
 
-#### STILL OPEN — σ too wide near settlement (the next mirage class)
-After #1+#2 the **mean-shift** mirages are gone, but a second class remains: events where our mean
-MATCHES the market (small gap) yet we assign far less probability to the market's favoured bucket —
-e.g. Tokyo 21°C (NO, net 50%, gap 1.0; market 80% vs our 27%) and NYC 78-79°F (NO, net 23%, gap 0.1;
-market 44% vs our 17%). Cause: our `sigma_eff` floor (2.0°F / 1.5°C, plus 0.7°F/lead-day) is too WIDE
-for a near-settlement high (which is nearly determined), so we stay diffuse while the market correctly
-concentrates. The mean-gap guardrail can't catch this (the mean agrees). **Do NOT blind-tune σ** — it
-needs the scoreboard / **intraday conditioning** (Phase 5/7+: condition on observed-so-far near
-settlement) to fix correctly. This is now the top forecast-correctness lever.
+#### Observed-so-far floor/ceiling — DONE (issue 14, the safe half of intraday conditioning)
+Near settlement the daily high/low is nearly **locked in by what's already happened**, but the raw
+forecast stays too diffuse and finds fake edges on outcomes that are already physically impossible.
+Fix: the final high can't end below the max already recorded today, nor the low above the min —
+a **fact, not a tunable**. `fetch_observed_extreme` (`weather.py`) pulls today's tmax/tmin-so-far
+from the Meteostat station (observation-based, so it never OVERSTATES; lag only weakens the bound,
+never wrongs it), and `EnsembleForecast._fitted_bucket_prob` **censors** the distribution at it
+(`floor` for highs / `ceiling` for lows) — impossible buckets collapse to ~0 and the mass piles at
+the observed value. Wired into `generate_weather_signal` (pre-warmed per city/date/metric in the
+scan); shows `[obs floor/ceil N]` in the reasoning. Tests: `test_forecast_distribution.py`.
+**Critical safety = a time-gate:** the bound is only trusted on a finished local day, or on the
+in-progress day AFTER the extreme has typically occurred (high ≥ ~4pm local, low ≥ ~10am local;
+local clock approximated from longitude). Without it, a morning overnight reading made the bot
+wildly over-confident before the day's high had even happened (observed Chicago "floor" 76.6°F at
+3am vs a 71.7°F forecast → 100% on a low bucket). This is the **safe half** of intraday conditioning:
+it bounds the side that's already determined, using only a hard fact.
+
+#### STILL OPEN — σ too wide on the UPPER side near settlement (needs data)
+The floor fixes the *lower* side. The remaining mirage is the *upper* side: our forecast still thinks
+the high will climb further than it will once the peak has passed — e.g. Hong Kong 29°C late
+afternoon, forecast mean 30.7°C vs an observed-so-far 29.3°C that won't rise much more, so we wrongly
+bet NO on 29°C. The floor can't bound this (it's above the observed), and the mean-gap guardrail
+misses it when our mean matches the market's *implied* mean but our *shape* is wrong. Fixing it =
+modelling "how much higher can it still climb in the hours left," which shrinks σ as the day ends —
+the **tunable** part that needs the scoreboard. **Do NOT blind-tune σ.** Top forecast lever once data
+is in (Phase 5/7+ intraday conditioning).
 
 ### Latest changes (2026-06-14, second pass)
 - **Min traded-volume gate — DONE.** Added `WEATHER_MIN_VOLUME` ($500) to

@@ -54,24 +54,11 @@ OBS_LAG_DAYS = 2
 # scaled 1/1.8 for °C). Otherwise skip (the market-gap guardrail still protects it).
 CONSISTENCY_MAX_F = 2.0
 
-# Meteostat station id per city = the realized-observation source for the market's
-# settlement station (resolved via Meteostat's nearby endpoint, matched to the
-# named ICAO/station). None = no usable obs station near the settlement point
-# (Shanghai/Pudong's nearest is ~35km, too far to be the same microclimate) -> we
-# skip it and let the market-gap guardrail cover those events instead.
-METEOSTAT_STATION: Dict[str, Optional[str]] = {
-    "nyc": "72503",          # KLGA LaGuardia
-    "chicago": "72530",      # KORD O'Hare
-    "miami": "72202",        # KMIA
-    "los_angeles": "72295",  # KLAX
-    "denver": "KBKF0",       # Buckley SFB
-    "london": "EGLC0",       # London City
-    "tokyo": "47671",        # Haneda
-    "seoul": "47113",        # Incheon
-    "paris": "07150",        # Le Bourget
-    "shanghai": None,        # no station within ~35km of ZSPD Pudong -> skip
-    "hong_kong": "45007",    # HKO HQ (the named resolution source)
-}
+# Meteostat station id per city = the realized-observation source for each market's
+# settlement station. Single source of truth lives in weather.py (also used by the
+# live observed-high floor); None = no usable obs station near the settlement point
+# (e.g. Shanghai/Pudong) -> skipped here, covered by the market-gap guardrail.
+from backend.data.weather import METEOSTAT_STATION
 
 
 def _c_to_native(c: Optional[float], unit: str) -> Optional[float]:
