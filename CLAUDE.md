@@ -48,16 +48,21 @@ basic temperature. That's the only honest path to a real edge.
    (or the low *above* it) — but only once that extreme has actually occurred (afternoon for highs,
    late morning for lows), so a cool overnight reading can't fool it in the morning.
 
-**One known weakness, now with the fix in hand:** the floor above handles the *locked-in* side, but the
-bot can still be over-eager about the temperature climbing *higher* than it really will once the
-afternoon peak has passed. We've since **measured exactly how much it really climbs** (a 10-year
-backtest, validated against real settled outcomes), so this is no longer a guess — it's the next thing
-to build. See "NEXT TO BUILD — intraday σ schedule" below for the data and the full implementation spec.
+**This weakness is now FIXED (2026-06-14, pre-production audit — F4).** The floor above handles the
+*locked-in* side; the bot used to stay over-eager about the temperature climbing *higher* than it really
+will once the afternoon peak has passed. The intraday σ schedule narrowed the spread, and the audit's
+**observed-anchored pricing center** finished the job: once the day's extreme is in, the bot centers on
+*what's actually happened so far + the empirically-measured remaining drift* (the 10-year backtest), not
+its earlier forecast — so a hot (or cold) forecast can no longer be priced confidently on a value that
+can't happen. See the "Pre-production audit + fixes" session note below.
 
 ## Hard constraints (do not violate)
 
 - **SIMULATION ONLY.** `SIMULATION_MODE` must stay `True` (`backend/config.py`). Never
-  flip it until ready to go live.
+  flip it until ready to go live. NOTE (audit F1): there is currently **no live-execution
+  path at all** — `SIMULATION_MODE` gates nothing yet, and the only "trade" is a DB row.
+  Going live is a build (order signing / submission / reconciliation), not a flag flip; it is
+  deferred BY DESIGN until the simulation proves an edge.
 - **Fix forecasts and measurement
   first, then let the simulation tell us whether the model beats the market net of fees.
 - **Don't skip ahead.** Get the basics correct before any fancy model work. Better models
@@ -89,6 +94,56 @@ Model-correctness + cost work (Phases 1–7) is done. We are now in **Phase 7
 (run-and-evaluate)**: the scoreboard was **reset to a clean slate** so it contains only
 **current-model** trades (liquidity/spread-gated, bias-corrected, cash-staked). Let it run
 and read the scoreboard.
+
+### Pre-production audit + fixes (2026-06-14, latest)
+A full adversarial pre-production audit was run (findings F1–F24; the report is kept locally as
+`AUDIT_REPORT.md`/`.pdf`, NOT committed). Fixes below are all simulation-only; tests + imports pass;
+committed and pushed to `main`. New config knobs: `WEATHER_MAX_CITY_DAY_FRACTION` (0.07),
+`WEATHER_MIN_MARKET_GAP_F` (0.5), `WEATHER_MARKET_GAP_SIGMA_K` (2.0).
+
+- **Sub-zero buckets parse correctly (F6).** `parse_bucket_label` now accepts an optional leading
+  minus (and normalises the unicode minus); `"-2°C or below"` no longer reads as a positive `+2`. A
+  latent winter bug for the °C cities.
+- **Yes/No mapped by LABEL, not index (F7).** New `weather_markets.yes_index()` reads the market's own
+  `outcomes` and locates "Yes"; used at entry, settlement and the dashboard mark-to-market. Live Gamma
+  data is `["Yes","No"]` today (verified), so the default is unchanged — defensive against a flipped
+  market inverting price / token / fill / settlement.
+- **Kelly sizes off FREE cash (F9).** `_available_bankroll()` = live bankroll − open weather exposure
+  (open stakes aren't debited until settlement, so the raw bankroll overstated free cash and over-bet).
+  The scan sizes off this.
+- **Per-city/day correlated-risk cap (F11).** `WEATHER_MAX_CITY_DAY_FRACTION` (0.07) caps total open
+  stake on any one city+day (all its buckets hinge on one forecast). Enforced per-trade in the scheduler.
+- **`MAX_TOTAL_PENDING_TRADES` (20) now ENFORCED (F10).** It was defined but unused; the scheduler now
+  stops opening new trades at the cap. (The realized-only daily-breaker's slow-reaction refinement was
+  left low-priority, per the user.)
+- **Observed-anchored pricing center (F4) — the real fix for evening over-confidence.** The intraday σ
+  schedule shrank σ but kept centering on the stale forecast and ignored the curve's MEAN, so a hot/cold
+  forecast could be priced ~confidently on a value that can no longer happen (the observed-floor only
+  bounds ONE side). New `EnsembleForecast.pricing_center()` anchors the in-progress-day center on
+  observed-so-far + `intraday_drift()` (the curve mean) once the extreme is in; BOTH the bucket
+  probability and the market-gap guardrail use this same center. Curve numbers are NOT hand-tuned.
+- **Market-gap tolerance scales with confidence (F3).** Was a flat 2°F; at the ~0.3°F evening σ a 2°F
+  disagreement puts our mass on the wrong bucket. Now `clamp(WEATHER_MARKET_GAP_SIGMA_K·σ_eff,
+  WEATHER_MIN_MARKET_GAP_F, WEATHER_MAX_MARKET_GAP_F)`, stored on the signal as `market_gap_threshold`
+  so `passes_threshold` stays consistent with pricing. Offline demo: a hot 86°F forecast with obs-so-far
+  84°F now prices ~100% on `84-85` (was 94% on the wrong `86-87`); the evening tolerance tightens
+  2.0→0.64°F.
+- **Resolution-source (F5) — VERIFIED; mostly fine, one item deferred.** Read the live Polymarket
+  resolution text: Hong Kong settles on the HK Observatory "Absolute Daily Max/Min (°C), one decimal" —
+  a different PROVIDER than the Meteostat data the observed-floor / bias read (US = NWS, intl =
+  Wunderground per each market's text). Bucket ROUNDING is fine (single-integer °C labels =
+  round-to-nearest, which the math already does → no change). The residual fix — point the
+  observed-floor / bias at each market's official provider — is DEFERRED (tied to the σ/guardrail work;
+  Fix A+B already suppress when our thermometer disagrees with the market while confident, partly
+  covering it).
+- **Acknowledged, deferred BY DESIGN:** no live-execution path yet (F1 — see Hard constraints); the
+  control-API endpoints (`/api/bot/*`, `/api/run-scan`, `/api/settle-trades`) are unauthenticated (F2)
+  — gate them before any deploy.
+
+New code: `yes_index`, `_available_bankroll`, `intraday_drift`,
+`EnsembleForecast.pricing_center` / `effective_sigma_for`, `WeatherTradingSignal.market_gap_threshold`.
+Tests added to `tests/test_forecast_distribution.py`. **Still pending:** live-validate the F3/F4 fixes
+when the Open-Meteo/Meteostat quota resets; the F5 re-sourcing is the remaining tied-off item.
 
 ### Latest session (2026-06-14, current) — intraday σ ON, relative sizing, BTC/AI purge, repo moved
 - **Intraday σ schedule — built + ENABLED** (`WEATHER_INTRADAY_SIGMA_ENABLED=True`; see the
