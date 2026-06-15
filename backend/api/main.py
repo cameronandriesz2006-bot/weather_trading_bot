@@ -32,6 +32,12 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Path to the built frontend dashboard (built on the server via `npm run build`).
+from pathlib import Path as _Path
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+_frontend_dist = _Path(__file__).resolve().parents[2] / "frontend" / "dist"
+
 
 # WebSocket connection manager
 class ConnectionManager:
@@ -273,6 +279,10 @@ async def shutdown():
 # Core endpoints
 @app.get("/")
 async def root():
+    # Serve the dashboard if it's been built; otherwise return API status JSON.
+    index = _frontend_dist / "index.html"
+    if index.is_file():
+        return FileResponse(str(index))
     return {"status": "ok", "message": "Weather Trading Bot API v3.0", "simulation_mode": settings.SIMULATION_MODE}
 
 
@@ -984,13 +994,10 @@ async def websocket_events(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
-# --- Serve the built frontend dashboard ---
+# --- Serve the built frontend dashboard's static assets ---
 # Mounted last so it never shadows the /api routes, /docs, or the WebSocket above.
+# The SPA entry (index.html) is served by the root route; this serves /assets/*.
 # Guarded by a directory check so local dev (no build) still imports cleanly.
-from pathlib import Path as _Path
-from fastapi.staticfiles import StaticFiles
-
-_frontend_dist = _Path(__file__).resolve().parents[2] / "frontend" / "dist"
 if _frontend_dist.is_dir():
     app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
 
