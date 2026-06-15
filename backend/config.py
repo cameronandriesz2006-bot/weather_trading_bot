@@ -34,7 +34,7 @@ class Settings(BaseSettings):
     # Fractional Kelly (shared sizing helper). Lowered in Phase 6: with honest
     # (Phase 4) probabilities we no longer need the aggressive fraction, and
     # smaller bets are safer until the scoreboard proves an edge. Tune empirically.
-    KELLY_FRACTION: float = 0.10
+    KELLY_FRACTION: float = 0.05
     # Per-trade ceiling as a FRACTION OF THE LIVE BANKROLL (relative, so it scales at
     # any bankroll — the sim runs at $10k but the live account will be smaller). This is
     # now the SINGLE per-trade cap: it replaces the old fixed $75/$100 dollar caps that
@@ -42,7 +42,7 @@ class Settings(BaseSettings):
     # confidence. The Kelly helper sizes each bet off the live bankroll and then clamps
     # the fraction here, so a bigger-edge / more-confident bet genuinely takes a larger
     # stake right up to this ceiling, and only the very strongest bets clip at it.
-    KELLY_MAX_TRADE_FRACTION: float = 0.05    # <= 5% of bankroll on any single bet
+    KELLY_MAX_TRADE_FRACTION: float = 0.025   # <= 2.5% of bankroll on any single bet
 
     # Settlement cadence (shared — settles all trade types)
     SETTLEMENT_INTERVAL_SECONDS: int = 120
@@ -50,7 +50,7 @@ class Settings(BaseSettings):
     # Risk management. Limits are FRACTIONS OF THE LIVE BANKROLL (not fixed dollars) so
     # they scale at any bankroll. (The per-trade sizing cap lives with
     # KELLY_MAX_TRADE_FRACTION above; total weather exposure / min trade are below.)
-    DAILY_LOSS_LIMIT_FRACTION: float = 0.075   # halt trading for the day after losing this share of bankroll (~$750 @ $10k)
+    DAILY_LOSS_LIMIT_FRACTION: float = 0.15    # halt trading for the day after losing this share of bankroll (~$1,500 @ $10k)
     MAX_TOTAL_PENDING_TRADES: int = 20
 
     # Weather trading settings
