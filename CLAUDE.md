@@ -88,12 +88,65 @@ can't happen. See the "Pre-production audit + fixes" session note below.
 
 Re-run the scoreboard after every change. One change at a time, always keep it running.
 
-## Current state (2026-06-14)
+## Current state (2026-06-15)
 
-Model-correctness + cost work (Phases 1–7) is done. We are now in **Phase 7
-(run-and-evaluate)**: the scoreboard was **reset to a clean slate** so it contains only
-**current-model** trades (liquidity/spread-gated, bias-corrected, cash-staked). Let it run
-and read the scoreboard.
+Model-correctness + cost work (Phases 1–7) is done. We are in **Phase 7 (run-and-evaluate)**:
+the bot is now **running and accumulating real scoreboard trades** (started 2026-06-15; the
+slate had been reset clean). The **active next step is operational, not model work**: move the
+bot to an always-on **DigitalOcean cloud server** so it collects data 24/7 (see "Session
+2026-06-15 → next: cloud migration" below). Let it run and read the scoreboard.
+
+### Session 2026-06-15 — bets halved, daily-loss limit raised, bias-cohort tagging, cloud plan
+First live run + three user-directed changes (all simulation-only; committed + pushed to `main`).
+
+- **Started the bot for real (Phase 7 data collection began).** First scans placed trades
+  (Polymarket weather, °F + °C cities). Open exposure self-refills toward the
+  `WEATHER_MAX_ALLOCATION_FRACTION` cap (~20%/$2k) as room frees up.
+- **Position sizes HALVED (commit `94e0223`).** `KELLY_FRACTION` 0.10→**0.05** (halves normal
+  bets) AND `KELLY_MAX_TRADE_FRACTION` 0.05→**0.025** (so the strongest bets, previously pinned
+  at the 5%/$500 cap, also halve → 2.5%/$250). **Gotcha worth remembering:** `.env` (gitignored)
+  had `KELLY_FRACTION=0.10`, and pydantic-settings makes `.env` OVERRIDE the `config.py` default —
+  so editing `config.py` alone did nothing. Fixed `.env` AND `.env.example` to 0.05. Verified live:
+  every bet halves exactly (ratio 0.500). **Any future config change must check `.env` first.**
+- **Daily-loss limit raised (commit `94e0223`).** `DAILY_LOSS_LIMIT_FRACTION` 0.075→**0.15**
+  (~$1,500 @ $10k) so a couple of losing end-of-day settlements don't trip the breaker and stall
+  data collection. Note the breaker is **realized-loss-only** (`settled==True`,
+  `settlement_time>=today UTC`), and temp markets settle at local day-end — so it bites after a
+  bad settlement batch, not intraday.
+- **Halved the existing open trades in the DB** (runtime data, not in git): a one-off
+  `UPDATE trades SET size=size/2 WHERE settled=0`. Bankroll untouched (open stakes aren't debited
+  until settlement). Did NOT reset the scoreboard (user's instruction).
+- **Bias-cohort tagging of the scoreboard — DONE (commit `f35dfdf`).** So we can answer
+  empirically whether the **5 uncorrected cities** (LA, Tokyo, Seoul, Hong Kong, Shanghai — the
+  coastal ones the bias model skips; ~31% of current open exposure) underperform the **6 corrected**
+  (NYC, Chicago, Miami, Denver, London, Paris). New `weather.is_bias_corrected(city, metric)`
+  (mirrors the `get_station_bias` gate); new `Trade.bias_corrected` column **set at entry time**
+  (so a later bias backfill that fixes a city doesn't relabel old trades), migrated in
+  `ensure_schema`; one-off `backend/data/backfill_bias_corrected.py` tagged the 18 existing trades
+  (12 corrected / 6 uncorrected). `/api/dashboard` returns a per-cohort scoreboard
+  (`_compute_bias_segments`: open/settled, win rate, total P&L, Brier from executed trades);
+  `Scoreboard.tsx` renders the comparison; `TradeResponse` carries the per-trade tag. Reading:
+  **if "uncorrected" trails on win rate/P&L/Brier, the missing bias is leaking; if both track,
+  the market-gap guardrail is covering for it.** Fills in as trades settle.
+
+#### Session 2026-06-15 → next: cloud migration (DigitalOcean) — PLANNED, not started
+User wants the bot always-on without leaving their PC on, and the **scoreboard shared** between
+their PC and a MacBook. Decision: a **single cloud runner** (no Postgres needed — keep the
+existing **SQLite** as the one source of truth, since only the server runs the bot).
+- **Provider/size:** DigitalOcean droplet, smallest **$6/mo** (1 vCPU, 1 GB RAM, Ubuntu). 1 GB
+  chosen over 512 MB for numpy/pandas/scipy headroom.
+- **Access model:** SSH from either laptop; **dashboard viewed over an SSH tunnel** (e.g.
+  `ssh -L 3000:localhost:3000`), NOT a public port — the control endpoints are unauthenticated
+  (audit F2), so the dashboard must stay private. Run **Claude Code on the server** (SSH in, run
+  `claude` in the repo there) so edits apply to the live bot.
+- **Steps to do with the user (one at a time):** (1) create DO account + droplet [user does
+  signup/payment]; (2) SSH key + first login; (3) install Python 3.12 + Node + git, clone repo,
+  venv + `pip install -r requirements.txt`, `npm install`; (4) recreate `.env` (gitignored) with
+  `KELLY_FRACTION=0.05`; (5) **scp the current `tradingbot.db` (~29 MB) up** so we keep the trades
+  already collected; (6) run backend under a process manager (systemd or tmux) so it survives
+  logout/reboot + auto-restarts; (7) tunnel command for the dashboard; (8) get Claude Code running
+  on the server. After cutover, **the PC stops being the runner** (avoid two bots → diverging DBs);
+  laptops just view/edit. Code stays synced via git both ways.
 
 ### Pre-production audit + fixes (2026-06-14, latest)
 A full adversarial pre-production audit was run (findings F1–F24; the report is kept locally as
@@ -293,6 +346,9 @@ appropriately unsure, and watch that bet sizes don't blow up (the `_MIN` rail). 
 numbers — they come from the backtest.
 
 #### Position sizing made RELATIVE (2026-06-14) — DONE
+_(Numbers below were HALVED 2026-06-15: `KELLY_FRACTION` 0.10→0.05, `KELLY_MAX_TRADE_FRACTION`
+0.05→0.025, `DAILY_LOSS_LIMIT_FRACTION` 0.075→0.15. See "Session 2026-06-15" above for the
+current values + the `.env`-overrides-`config.py` gotcha.)_
 Every bet was entering at ~$75 regardless of confidence: the Kelly helper sizes off the live bankroll,
 but a **fixed $75 per-trade dollar cap** (`MAX_TRADE_SIZE`) sat far below what Kelly wanted on a $10k
 bankroll (typically $120–$500), so it clamped nearly every bet to the same number and erased the
