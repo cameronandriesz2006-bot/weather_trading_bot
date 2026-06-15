@@ -49,6 +49,7 @@ function App() {
   const weatherSignals = data?.weather_signals ?? []
   const recentTrades = data?.recent_trades ?? []
   const calibration = data?.calibration ?? null
+  const biasSegments = data?.bias_segments ?? []
   const stats = data?.stats ?? {
     is_running: false, last_run: null, total_trades: 0, total_pnl: 0,
     bankroll: 10000, winning_trades: 0, win_rate: 0,
@@ -162,7 +163,7 @@ function App() {
         </section>
 
         {/* ===== Scoreboard & calibration ===== */}
-        <Scoreboard calibration={calibration} />
+        <Scoreboard calibration={calibration} biasSegments={biasSegments} />
 
         {/* ===== Live event log (collapsible) ===== */}
         <LiveLog />

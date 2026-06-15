@@ -1,7 +1,69 @@
-import type { CalibrationSummary } from '../types'
+import type { BiasSegment, CalibrationSummary } from '../types'
 
 function signedPct(x: number): string {
   return `${x >= 0 ? '+' : ''}${(x * 100).toFixed(1)}%`
+}
+
+function usd(x: number): string {
+  return `${x >= 0 ? '+' : '-'}$${Math.abs(x).toFixed(2)}`
+}
+
+/** Corrected-vs-uncorrected cohort table: does the bias model actually help? */
+function BiasCohorts({ segments }: { segments: BiasSegment[] }) {
+  if (!segments.length) return null
+  const order: Record<string, number> = { corrected: 0, uncorrected: 1 }
+  const rows = [...segments].sort((a, b) => (order[a.label] ?? 9) - (order[b.label] ?? 9))
+  const anySettled = rows.some((r) => r.settled > 0)
+
+  return (
+    <div className="mt-5 border-t border-neutral-800 pt-4">
+      <div className="text-[11px] uppercase tracking-wider text-neutral-500 mb-2">
+        Bias model: corrected vs uncorrected cities
+      </div>
+      <table className="w-full text-sm tabular-nums">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wider text-neutral-500 text-right">
+            <th className="text-left font-medium py-1">Cohort</th>
+            <th className="font-medium">Open</th>
+            <th className="font-medium">Settled</th>
+            <th className="font-medium">Win rate</th>
+            <th className="font-medium">Total P&amp;L</th>
+            <th className="font-medium">Brier</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label} className="text-right border-t border-neutral-800/60">
+              <td className="text-left py-1.5">
+                <span className={r.label === 'uncorrected' ? 'text-amber-400' : 'text-neutral-200'}>
+                  {r.label}
+                </span>
+              </td>
+              <td className="text-neutral-300">
+                {r.open_trades}
+                <span className="text-neutral-600"> (${r.open_exposure.toFixed(0)})</span>
+              </td>
+              <td className="text-neutral-300">{r.settled}</td>
+              <td className={r.settled ? '' : 'text-neutral-600'}>
+                {r.settled ? `${(r.win_rate * 100).toFixed(0)}%` : '—'}
+              </td>
+              <td className={r.settled ? (r.total_pnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-neutral-600'}>
+                {r.settled ? usd(r.total_pnl) : '—'}
+              </td>
+              <td className={r.settled ? '' : 'text-neutral-600'}>
+                {r.brier_score != null ? r.brier_score.toFixed(3) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-xs text-neutral-500 mt-2">
+        {anySettled
+          ? 'If "uncorrected" trails on win rate / P&L / Brier, the missing bias is leaking. Both should track each other if the market-gap guardrail is covering for it.'
+          : 'Tagged and waiting on settlement — win rate, P&L, and Brier per cohort fill in as these trades resolve.'}
+      </p>
+    </div>
+  )
 }
 
 function Metric({ label, value, hint, tone = 'neutral' }: {
@@ -17,7 +79,10 @@ function Metric({ label, value, hint, tone = 'neutral' }: {
   )
 }
 
-export function Scoreboard({ calibration }: { calibration: CalibrationSummary | null }) {
+export function Scoreboard({ calibration, biasSegments = [] }: {
+  calibration: CalibrationSummary | null
+  biasSegments?: BiasSegment[]
+}) {
   const settled = calibration?.total_with_outcome ?? 0
 
   return (
@@ -33,6 +98,7 @@ export function Scoreboard({ calibration }: { calibration: CalibrationSummary | 
             <div className="text-xs text-neutral-500 mt-2">
               This is the honest finish line: does the model beat the market price, <em>net of costs</em>?
             </div>
+            <BiasCohorts segments={biasSegments} />
           </div>
         ) : (
           <>
@@ -59,6 +125,7 @@ export function Scoreboard({ calibration }: { calibration: CalibrationSummary | 
             <p className="text-xs text-neutral-500 mt-4">
               The honest finish line: the predicted edge should be matched by the actual edge, net of costs.
             </p>
+            <BiasCohorts segments={biasSegments} />
           </>
         )}
       </div>

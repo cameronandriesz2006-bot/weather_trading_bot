@@ -203,6 +203,23 @@ def get_station_bias(city_key: str, metric: str) -> float:
     return max(-cap, min(cap, bias))
 
 
+def is_bias_corrected(city_key: str, metric: str) -> bool:
+    """True iff a per-station bias was actually APPLIED for this city+metric.
+
+    Mirrors the gate in get_station_bias: bias enabled, an entry exists, and it
+    cleared the min-samples bar. Cities whose bias was SKIPPED (coastal source-
+    inconsistency or no nearby station — currently LA, Tokyo, Seoul, Hong Kong,
+    Shanghai) return False. Used to tag each trade so the scoreboard can compare
+    bias-corrected vs uncorrected cohorts; recorded at trade time so a later
+    backfill that corrects a city doesn't retroactively relabel old trades.
+    """
+    from backend.config import settings
+    if not settings.WEATHER_BIAS_ENABLED:
+        return False
+    entry = _load_bias().get(city_key, {}).get(metric)
+    return bool(entry and entry.get("samples", 0) >= settings.WEATHER_BIAS_MIN_SAMPLES)
+
+
 # --- Intraday σ schedule (see backend/data/intraday_backtest.py) --------------
 # intraday_curve.json holds, per city -> metric (high/low) -> LOCAL hour, the
 # {mean, std, n} of (final daily extreme − extreme so far) from 10y of station obs.

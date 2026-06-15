@@ -80,6 +80,8 @@ class TradeResponse(BaseModel):
     # Mark-to-market (display only): current price of the side we hold + unrealized P&L
     current_price: Optional[float] = None
     unrealized_pnl: Optional[float] = None
+    # Scoreboard cohort: True = bias-corrected city, False = uncorrected, None = unknown
+    bias_corrected: Optional[bool] = None
 
 
 class BotStats(BaseModel):
@@ -113,6 +115,21 @@ class CalibrationSummary(BaseModel):
     avg_predicted_edge: float
     avg_actual_edge: float
     brier_score: float
+
+
+class BiasSegment(BaseModel):
+    """Scoreboard performance for one bias cohort (corrected vs uncorrected city).
+    Computed from executed trades (real P&L), so it answers: do the cities WITHOUT
+    bias correction underperform the ones with it?"""
+    label: str                          # "corrected" | "uncorrected"
+    open_trades: int = 0                # currently-held positions in this cohort
+    open_exposure: float = 0.0          # $ open stake in this cohort
+    settled: int = 0                    # resolved trades (the basis for the metrics below)
+    wins: int = 0
+    win_rate: float = 0.0
+    total_pnl: float = 0.0
+    avg_pnl: float = 0.0
+    brier_score: Optional[float] = None  # mean (model_prob - outcome)^2; None until any settle
 
 
 class WeatherForecastResponse(BaseModel):
@@ -183,6 +200,7 @@ class DashboardData(BaseModel):
     recent_trades: List[TradeResponse]
     equity_curve: List[dict]
     calibration: Optional[CalibrationSummary] = None
+    bias_segments: List[BiasSegment] = []
     weather_signals: List[WeatherSignalResponse] = []
     weather_forecasts: List[WeatherForecastResponse] = []
 
@@ -382,6 +400,36 @@ async def settle_trades_endpoint(db: Session = Depends(get_db)):
         "settled_count": len(settled),
         "trades": [{"id": t.id, "result": t.result, "pnl": t.pnl} for t in settled]
     }
+
+
+def _compute_bias_segments(db: Session) -> List[BiasSegment]:
+    """Split executed weather trades into bias-corrected vs uncorrected cohorts and
+    score each from real outcomes. Trades with a NULL tag (legacy) are omitted."""
+    segments: List[BiasSegment] = []
+    for label, flag in (("corrected", True), ("uncorrected", False)):
+        cohort = db.query(Trade).filter(Trade.bias_corrected == flag).all()
+        open_trades = [t for t in cohort if not t.settled]
+        settled = [t for t in cohort if t.settled]
+        wins = sum(1 for t in settled if t.result == "win")
+        n = len(settled)
+        pnls = [t.pnl for t in settled if t.pnl is not None]
+        total_pnl = sum(pnls)
+        brier_pts = [t for t in settled
+                     if t.model_probability is not None and t.settlement_value is not None]
+        brier = (sum((t.model_probability - t.settlement_value) ** 2 for t in brier_pts)
+                 / len(brier_pts)) if brier_pts else None
+        segments.append(BiasSegment(
+            label=label,
+            open_trades=len(open_trades),
+            open_exposure=round(sum(t.size or 0.0 for t in open_trades), 2),
+            settled=n,
+            wins=wins,
+            win_rate=(wins / n) if n else 0.0,
+            total_pnl=round(total_pnl, 2),
+            avg_pnl=round(total_pnl / n, 2) if n else 0.0,
+            brier_score=round(brier, 4) if brier is not None else None,
+        ))
+    return segments
 
 
 def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
@@ -634,6 +682,7 @@ def _trade_to_response(t, current_price: Optional[float] = None) -> TradeRespons
         market_type=getattr(t, "market_type", None),
         current_price=current_price,
         unrealized_pnl=unrealized,
+        bias_corrected=getattr(t, "bias_corrected", None),
     )
 
 
@@ -850,6 +899,9 @@ async def get_dashboard(db: Session = Depends(get_db)):
     # Calibration summary
     calibration = _compute_calibration_summary(db)
 
+    # Bias-corrected vs uncorrected cohort scoreboard
+    bias_segments = _compute_bias_segments(db)
+
     # Weather data (if enabled)
     weather_signals_data = []
     weather_forecasts_data = []
@@ -889,6 +941,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         recent_trades=recent_trades,
         equity_curve=equity_curve,
         calibration=calibration,
+        bias_segments=bias_segments,
         weather_signals=weather_signals_data,
         weather_forecasts=weather_forecasts_data,
     )

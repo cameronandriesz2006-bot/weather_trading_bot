@@ -19,6 +19,7 @@ export interface Trade {
   market_type?: string | null
   current_price?: number | null
   unrealized_pnl?: number | null
+  bias_corrected?: boolean | null
 }
 
 export interface BotStats {
@@ -48,6 +49,18 @@ export interface CalibrationSummary {
   avg_predicted_edge: number
   avg_actual_edge: number
   brier_score: number
+}
+
+export interface BiasSegment {
+  label: string            // "corrected" | "uncorrected"
+  open_trades: number
+  open_exposure: number
+  settled: number
+  wins: number
+  win_rate: number
+  total_pnl: number
+  avg_pnl: number
+  brier_score: number | null
 }
 
 export interface WeatherForecast {
@@ -110,6 +123,7 @@ export interface DashboardData {
   recent_trades: Trade[]
   equity_curve: EquityPoint[]
   calibration: CalibrationSummary | null
+  bias_segments?: BiasSegment[]
   weather_signals: WeatherSignal[]
   weather_forecasts: WeatherForecast[]
 }

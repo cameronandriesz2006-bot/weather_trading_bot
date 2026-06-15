@@ -185,6 +185,12 @@ async def weather_scan_and_trade_job():
                 entry_price = signal.entry_price
                 fee = settings.WEATHER_FEE_RATE * trade_size
 
+                # Tag the scoreboard cohort: did this city+metric get a per-station
+                # bias correction? (False for the uncorrected coastal cities.)
+                from backend.data.weather import is_bias_corrected
+                bias_corrected = is_bias_corrected(
+                    signal.market.city_key, signal.market.metric)
+
                 trade = Trade(
                     market_ticker=signal.market.market_id,
                     platform="polymarket",
@@ -198,6 +204,7 @@ async def weather_scan_and_trade_job():
                     model_probability=signal.model_probability,
                     market_price_at_entry=signal.market_probability,
                     edge_at_entry=signal.edge,
+                    bias_corrected=bias_corrected,
                 )
 
                 db.add(trade)

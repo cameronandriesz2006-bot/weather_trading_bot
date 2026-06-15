@@ -51,6 +51,12 @@ class Trade(Base):
     market_price_at_entry = Column(Float)
     edge_at_entry = Column(Float)
 
+    # Scoreboard cohort: was a per-station forecast bias applied to this trade's
+    # city+metric at entry? True = corrected city (NYC/Chicago/Miami/Denver/
+    # London/Paris), False = uncorrected (LA/Tokyo/Seoul/HK/Shanghai), NULL =
+    # unknown/legacy. Set at trade time so it stays honest if a city is later fixed.
+    bias_corrected = Column(Boolean, nullable=True)
+
 
 class BotState(Base):
     """Bot state and statistics."""
@@ -145,6 +151,14 @@ def ensure_schema():
                     conn.execute(text("ALTER TABLE trades ADD COLUMN bucket_label VARCHAR"))
         except Exception as e:
             logger.warning(f"Could not add trades.bucket_label: {e}")
+
+    if "bias_corrected" not in columns:
+        try:
+            with engine.connect() as conn:
+                with conn.begin():
+                    conn.execute(text("ALTER TABLE trades ADD COLUMN bias_corrected BOOLEAN"))
+        except Exception as e:
+            logger.warning(f"Could not add trades.bias_corrected: {e}")
 
     # Add calibration columns to signals table
     try:
