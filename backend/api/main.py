@@ -984,6 +984,17 @@ async def websocket_events(websocket: WebSocket):
         ws_manager.disconnect(websocket)
 
 
+# --- Serve the built frontend dashboard ---
+# Mounted last so it never shadows the /api routes, /docs, or the WebSocket above.
+# Guarded by a directory check so local dev (no build) still imports cleanly.
+from pathlib import Path as _Path
+from fastapi.staticfiles import StaticFiles
+
+_frontend_dist = _Path(__file__).resolve().parents[2] / "frontend" / "dist"
+if _frontend_dist.is_dir():
+    app.mount("/", StaticFiles(directory=str(_frontend_dist), html=True), name="frontend")
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=int(os.getenv("PORT", "8000")))
