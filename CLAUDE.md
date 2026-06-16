@@ -88,13 +88,50 @@ can't happen. See the "Pre-production audit + fixes" session note below.
 
 Re-run the scoreboard after every change. One change at a time, always keep it running.
 
-## Current state (2026-06-15)
+## Current state (2026-06-16)
 
 Model-correctness + cost work (Phases 1–7) is done. We are in **Phase 7 (run-and-evaluate)**:
-the bot is now **running and accumulating real scoreboard trades** (started 2026-06-15; the
-slate had been reset clean). The **active next step is operational, not model work**: move the
-bot to an always-on **DigitalOcean cloud server** so it collects data 24/7 (see "Session
-2026-06-15 → next: cloud migration" below). Let it run and read the scoreboard.
+the bot is **live on the DigitalOcean server 24/7** (systemd `weatherbot.service`, port 8000 —
+this machine IS the always-on runner; the cloud migration planned 2026-06-15 is DONE) and
+accumulating real scoreboard trades. **Agreed stance (2026-06-16): FREEZE the model and collect
+weeks of data** — only measurement/instrumentation changes during the run; any model change
+restarts the evaluation clock. Let it run and read the scoreboard. See "Session 2026-06-16" below.
+
+### Session 2026-06-16 — bias badge on every trade row; freeze-and-collect decided; go-live economics
+No model changes (Phase 7 freeze). One code change + a strategic review (committed/pushed to `main`).
+
+- **Per-trade bias-cohort badge — DONE (commit `a951334`).** `TradesPanel.tsx` now renders a
+  `corrected`/`uncorrected` badge (amber = uncorrected) on EVERY row of both the Active and Settled
+  lists — the tag was already persisted + returned by the API but only shown in the aggregate
+  `Scoreboard`. Verified the data first: all 27 trades (14 open / 13 settled) were already correctly
+  tagged, 0 NULLs, 0 mismatches vs the live per-(city,metric) predicate. Tag-at-entry semantics
+  preserved. Frontend rebuilt (`npm run build`); the live server serves it (StaticFiles from
+  `frontend/dist`, which is gitignored — no restart needed, but dist does NOT travel via git, so
+  rebuild on other machines after pull).
+- **Decision: FREEZE the model, collect data (weeks).** 13 settled / ~1 day (+$597, 77% win,
+  Brier ~0.12) is noise. Only instrumentation changes during the run; model changes restart the
+  clock. Refinements deferred until justified by data AND mechanism-rooted (leading candidate: the
+  Phase 5 **ECMWF+ICON** blend), never tuned to a noisy week (overfitting = the real self-deception
+  risk in thin, noisy markets).
+- **Execution-realism review (no code).** At the planned ~$1k go-live (caps are bankroll-relative,
+  so sizes ÷10 → ~$25 max bet), measured slippage is ~0–1% and is ALREADY charged into the
+  scoreboard (`entry_price` = fill VWAP; `net_edge` = edge − (vwap − mid) − fee). Adverse selection
+  in thin, no-insider weather markets is minor, possibly in our favor (we may be the faster side).
+  So the sim is a good real-money proxy at $1k; the $1k step is **proof-of-edge, not income**
+  (~$5–10/day even if the edge is real). Real risks = our own forecast calibration + small-sample
+  self-deception, NOT execution.
+- **Liquidity question is recoverable post-hoc — no tagging needed.** `trades.signal_id` →
+  `signals.liquidity`/`rel_spread`, plus realized slippage = `entry_price − market_price_at_entry`,
+  are stored on all 27 trades. Sort/bucket by liquidity whenever; it only reveals whether the
+  MODELED edge concentrates in thin books (can't prove real-money survival — that needs live fills).
+- **Capacity / bankroll ceiling (measured from live books).** ~55 of ~240 markets pass the
+  liquidity/vol/spread gates; ~15–18 actionable at once; ~$175 deployable/market before 2% slippage
+  (the bot's 10%-of-Gamma-liquidity cap ~$308 is slightly optimistic vs real depth). → capacity
+  ~$2.6–4.4k/cycle → **max useful bankroll ~$15–22k** for the current Polymarket slate before thin
+  books clamp sizes and self-slippage erodes the edge. **$/day at the ceiling, IF a real 2–5% net
+  edge: ~$60–200/day.** The $50–100/day goal needs ~$15–20k bankroll (≈ the strategy's realistic
+  ceiling on this slate); expandable by adding low markets / more cities / Kalshi. Everything is
+  `capacity × edge` — edge is the unproven term the run is testing.
 
 ### Session 2026-06-15 — bets halved, daily-loss limit raised, bias-cohort tagging, cloud plan
 First live run + three user-directed changes (all simulation-only; committed + pushed to `main`).
