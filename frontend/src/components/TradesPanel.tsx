@@ -52,21 +52,39 @@ function asUtc(ts: string): string {
 
 const POLY = 'https://polymarket.com/event/'
 
+// Per-trade bias-cohort mark. Mirrors the Scoreboard's color language: amber =
+// "uncorrected" (a city whose per-station bias was skipped — the cohort to watch),
+// muted = "corrected". Tag is recorded at entry time, so it never relabels.
+function BiasBadge({ corrected }: { corrected?: boolean | null }) {
+  if (corrected == null) return null
+  const cls = corrected ? 'bg-neutral-800 text-neutral-400' : 'bg-amber-500/15 text-amber-400'
+  return (
+    <span className={`ml-2 inline-block rounded px-1.5 py-0.5 text-[10px] font-medium uppercase tracking-wide align-middle ${cls}`}>
+      {corrected ? 'corrected' : 'uncorrected'}
+    </span>
+  )
+}
+
 function MarketCell({ t }: { t: Trade }) {
   const label = marketLabel(t)
-  if (t.event_slug) {
-    return (
-      <a
-        href={`${POLY}${t.event_slug}`}
-        target="_blank"
-        rel="noopener noreferrer"
-        className="text-neutral-200 hover:text-blue-300"
-      >
-        {label} <span className="text-blue-400">↗</span>
-      </a>
-    )
-  }
-  return <span className="text-neutral-200">{label}</span>
+  const inner = t.event_slug ? (
+    <a
+      href={`${POLY}${t.event_slug}`}
+      target="_blank"
+      rel="noopener noreferrer"
+      className="text-neutral-200 hover:text-blue-300"
+    >
+      {label} <span className="text-blue-400">↗</span>
+    </a>
+  ) : (
+    <span className="text-neutral-200">{label}</span>
+  )
+  return (
+    <span>
+      {inner}
+      <BiasBadge corrected={t.bias_corrected} />
+    </span>
+  )
 }
 
 function SideCell({ dir }: { dir: string }) {
