@@ -1,0 +1,20 @@
+# systemd unit for the weather bot — copy to /etc/systemd/system/weatherbot.service
+# Identical to the current Singapore box's unit (verified via `systemctl cat weatherbot`).
+# After copying:  systemctl daemon-reload && systemctl enable --now weatherbot
+[Unit]
+Description=Weather Prediction-Market Bot (FastAPI scan/settlement loop)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/weather_trading_bot
+# RAILWAY_ENVIRONMENT set so run.py disables uvicorn auto-reload (single process in production)
+Environment=RAILWAY_ENVIRONMENT=production
+Environment=PORT=8000
+ExecStart=/root/weather_trading_bot/venv/bin/python /root/weather_trading_bot/run.py
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target
