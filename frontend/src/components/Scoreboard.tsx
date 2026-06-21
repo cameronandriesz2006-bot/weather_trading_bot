@@ -66,6 +66,68 @@ function BiasCohorts({ segments }: { segments: BiasSegment[] }) {
   )
 }
 
+/** Active (still traded) vs retired cities — the active-cities filter. Lets us read
+ *  forward-looking performance in isolation while the retired cities' history stays
+ *  visible (nothing is deleted). Hidden until something has actually been retired. */
+function CityStatus({ segments }: { segments: BiasSegment[] }) {
+  if (!segments.length) return null
+  const order: Record<string, number> = { active: 0, retired: 1 }
+  const rows = [...segments].sort((a, b) => (order[a.label] ?? 9) - (order[b.label] ?? 9))
+  const retired = rows.find((r) => r.label === 'retired')
+  // Nothing retired yet -> the split is just noise; don't render it.
+  if (!retired || (retired.settled === 0 && retired.open_trades === 0)) return null
+
+  return (
+    <div className="mt-5 border-t border-neutral-800 pt-4">
+      <div className="text-[11px] uppercase tracking-wider text-neutral-500 mb-2">
+        Active vs retired cities
+      </div>
+      <table className="w-full text-sm tabular-nums">
+        <thead>
+          <tr className="text-[11px] uppercase tracking-wider text-neutral-500 text-right">
+            <th className="text-left font-medium py-1">Cities</th>
+            <th className="font-medium">Open</th>
+            <th className="font-medium">Settled</th>
+            <th className="font-medium">Win rate</th>
+            <th className="font-medium">Total P&amp;L</th>
+            <th className="font-medium">Brier</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => (
+            <tr key={r.label} className="text-right border-t border-neutral-800/60">
+              <td className="text-left py-1.5">
+                <span className={r.label === 'retired' ? 'text-neutral-500' : 'text-neutral-200'}>
+                  {r.label}
+                </span>
+              </td>
+              <td className="text-neutral-300">
+                {r.open_trades}
+                <span className="text-neutral-600"> (${r.open_exposure.toFixed(0)})</span>
+              </td>
+              <td className="text-neutral-300">{r.settled}</td>
+              <td className={r.settled ? '' : 'text-neutral-600'}>
+                {r.settled ? `${(r.win_rate * 100).toFixed(0)}%` : '—'}
+              </td>
+              <td className={r.settled ? (r.total_pnl >= 0 ? 'text-green-400' : 'text-red-400') : 'text-neutral-600'}>
+                {r.settled ? usd(r.total_pnl) : '—'}
+              </td>
+              <td className={r.settled ? '' : 'text-neutral-600'}>
+                {r.brier_score != null ? r.brier_score.toFixed(3) : '—'}
+              </td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      <p className="text-xs text-neutral-500 mt-2">
+        Read the <span className="text-neutral-300">active</span> row for the forward-looking book.
+        Retired cities (Shanghai &amp; LA — un-resolvable coastal stations dropped 2026-06-21) are no
+        longer traded; their history is kept here, not deleted.
+      </p>
+    </div>
+  )
+}
+
 function Metric({ label, value, hint, tone = 'neutral' }: {
   label: string; value: string; hint?: string; tone?: 'pos' | 'neg' | 'neutral'
 }) {
@@ -79,9 +141,10 @@ function Metric({ label, value, hint, tone = 'neutral' }: {
   )
 }
 
-export function Scoreboard({ calibration, biasSegments = [] }: {
+export function Scoreboard({ calibration, biasSegments = [], citySegments = [] }: {
   calibration: CalibrationSummary | null
   biasSegments?: BiasSegment[]
+  citySegments?: BiasSegment[]
 }) {
   const settled = calibration?.total_with_outcome ?? 0
 
@@ -98,6 +161,7 @@ export function Scoreboard({ calibration, biasSegments = [] }: {
             <div className="text-xs text-neutral-500 mt-2">
               This is the honest finish line: does the model beat the market price, <em>net of costs</em>?
             </div>
+            <CityStatus segments={citySegments} />
             <BiasCohorts segments={biasSegments} />
           </div>
         ) : (
@@ -125,6 +189,7 @@ export function Scoreboard({ calibration, biasSegments = [] }: {
             <p className="text-xs text-neutral-500 mt-4">
               The honest finish line: the predicted edge should be matched by the actual edge, net of costs.
             </p>
+            <CityStatus segments={citySegments} />
             <BiasCohorts segments={biasSegments} />
           </>
         )}

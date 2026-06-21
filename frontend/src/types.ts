@@ -124,6 +124,7 @@ export interface DashboardData {
   equity_curve: EquityPoint[]
   calibration: CalibrationSummary | null
   bias_segments?: BiasSegment[]
+  city_segments?: BiasSegment[]   // active (still traded) vs retired cities
   weather_signals: WeatherSignal[]
   weather_forecasts: WeatherForecast[]
 }

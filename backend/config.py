@@ -62,7 +62,14 @@ class Settings(BaseSettings):
     # US markets resolve in °F; the international markets resolve in °C (handled
     # natively per-city — see CITY_CONFIG "unit" in backend/data/weather.py). The
     # international books carry ~2-3x the liquidity of the US weather markets.
-    WEATHER_CITIES: str = "nyc,chicago,miami,los_angeles,denver,london,tokyo,seoul,paris,shanghai,hong_kong"
+    # NOTE (2026-06-21): los_angeles + shanghai DROPPED from active trading. Their
+    # settlement stations are un-resolvable by the forecast grid (LA = coastal marine
+    # layer; Shanghai/Pudong has no obs station within ~35km), so they can't be bias-
+    # corrected and were the two worst money-losers AND worst Brier-vs-market in the
+    # Phase-7 run (Shanghai −$534, LA −$312). They stay in CITY_CONFIG so any open
+    # positions still settle and their scoreboard history is preserved (shown as
+    # "retired" in the dashboard's active-vs-retired city panel — nothing deleted).
+    WEATHER_CITIES: str = "nyc,chicago,miami,denver,london,tokyo,seoul,paris,hong_kong"
 
     # Trading costs (Phase 6) — "profit" must mean profit net of costs.
     # On Polymarket the dominant cost is the bid/ask spread (the live market

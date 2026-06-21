@@ -3,7 +3,7 @@ from fastapi import FastAPI, Depends, HTTPException, WebSocket, WebSocketDisconn
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from datetime import datetime, timedelta
-from typing import List, Optional
+from typing import Dict, List, Optional
 import asyncio
 import json
 import os
@@ -207,6 +207,7 @@ class DashboardData(BaseModel):
     equity_curve: List[dict]
     calibration: Optional[CalibrationSummary] = None
     bias_segments: List[BiasSegment] = []
+    city_segments: List[BiasSegment] = []   # active (still traded) vs retired cities
     weather_signals: List[WeatherSignalResponse] = []
     weather_forecasts: List[WeatherForecastResponse] = []
 
@@ -412,34 +413,62 @@ async def settle_trades_endpoint(db: Session = Depends(get_db)):
     }
 
 
+def _active_city_keys() -> set:
+    """City keys currently traded (the live WEATHER_CITIES universe). Cities with
+    history but NOT in this set are 'retired' (e.g. coastal stations we dropped)."""
+    return {c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()}
+
+
+def _segment_from_trades(label: str, cohort: List[Trade]) -> BiasSegment:
+    """Score one cohort of executed trades from real outcomes (shared by the bias and
+    the active/retired city breakdowns so both use identical math)."""
+    open_trades = [t for t in cohort if not t.settled]
+    settled = [t for t in cohort if t.settled]
+    wins = sum(1 for t in settled if t.result == "win")
+    n = len(settled)
+    pnls = [t.pnl for t in settled if t.pnl is not None]
+    total_pnl = sum(pnls)
+    brier_pts = [t for t in settled
+                 if t.model_probability is not None and t.settlement_value is not None]
+    brier = (sum((t.model_probability - t.settlement_value) ** 2 for t in brier_pts)
+             / len(brier_pts)) if brier_pts else None
+    return BiasSegment(
+        label=label,
+        open_trades=len(open_trades),
+        open_exposure=round(sum(t.size or 0.0 for t in open_trades), 2),
+        settled=n,
+        wins=wins,
+        win_rate=(wins / n) if n else 0.0,
+        total_pnl=round(total_pnl, 2),
+        avg_pnl=round(total_pnl / n, 2) if n else 0.0,
+        brier_score=round(brier, 4) if brier is not None else None,
+    )
+
+
 def _compute_bias_segments(db: Session) -> List[BiasSegment]:
     """Split executed weather trades into bias-corrected vs uncorrected cohorts and
     score each from real outcomes. Trades with a NULL tag (legacy) are omitted."""
-    segments: List[BiasSegment] = []
-    for label, flag in (("corrected", True), ("uncorrected", False)):
-        cohort = db.query(Trade).filter(Trade.bias_corrected == flag).all()
-        open_trades = [t for t in cohort if not t.settled]
-        settled = [t for t in cohort if t.settled]
-        wins = sum(1 for t in settled if t.result == "win")
-        n = len(settled)
-        pnls = [t.pnl for t in settled if t.pnl is not None]
-        total_pnl = sum(pnls)
-        brier_pts = [t for t in settled
-                     if t.model_probability is not None and t.settlement_value is not None]
-        brier = (sum((t.model_probability - t.settlement_value) ** 2 for t in brier_pts)
-                 / len(brier_pts)) if brier_pts else None
-        segments.append(BiasSegment(
-            label=label,
-            open_trades=len(open_trades),
-            open_exposure=round(sum(t.size or 0.0 for t in open_trades), 2),
-            settled=n,
-            wins=wins,
-            win_rate=(wins / n) if n else 0.0,
-            total_pnl=round(total_pnl, 2),
-            avg_pnl=round(total_pnl / n, 2) if n else 0.0,
-            brier_score=round(brier, 4) if brier is not None else None,
-        ))
-    return segments
+    return [
+        _segment_from_trades(label, db.query(Trade).filter(Trade.bias_corrected == flag).all())
+        for label, flag in (("corrected", True), ("uncorrected", False))
+    ]
+
+
+def _compute_city_status_segments(db: Session) -> List[BiasSegment]:
+    """Split executed weather trades into ACTIVE (city still in WEATHER_CITIES) vs
+    RETIRED (city dropped from trading) cohorts and score each from real outcomes.
+    This is the dashboard's active-cities filter: it isolates forward-looking
+    performance WITHOUT deleting the retired cities' history (nothing is removed from
+    the DB — they simply move into the 'retired' bucket here)."""
+    from backend.data.weather_markets import parse_event_slug
+    active = _active_city_keys()
+    buckets: Dict[str, List[Trade]] = {"active": [], "retired": []}
+    for t in db.query(Trade).all():
+        parsed = parse_event_slug(t.event_slug or "")
+        if not parsed:
+            continue  # non-weather / unparseable slug
+        buckets["active" if parsed[0] in active else "retired"].append(t)
+    return [_segment_from_trades(label, buckets[label]) for label in ("active", "retired")]
 
 
 def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
@@ -911,6 +940,8 @@ async def get_dashboard(db: Session = Depends(get_db)):
 
     # Bias-corrected vs uncorrected cohort scoreboard
     bias_segments = _compute_bias_segments(db)
+    # Active (still traded) vs retired cities — the active-cities filter
+    city_segments = _compute_city_status_segments(db)
 
     # Weather data (if enabled)
     weather_signals_data = []
@@ -952,6 +983,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         equity_curve=equity_curve,
         calibration=calibration,
         bias_segments=bias_segments,
+        city_segments=city_segments,
         weather_signals=weather_signals_data,
         weather_forecasts=weather_forecasts_data,
     )
