@@ -9,7 +9,7 @@ ENV/
 env/
 .venv/
 *.egg-info/
-dist/
+/dist/
 build/
 *.egg
 
@@ -40,7 +40,9 @@ yarn-debug.log*
 yarn-error.log*
 
 # Build
-frontend/dist/
+# NOTE: frontend/dist is intentionally TRACKED (committed) so a plain `git pull` serves
+# the updated dashboard with NO build step. Rebuild (npm run build) + commit dist after
+# any frontend source change, or the committed bundle goes stale.
 frontend/build/
 
 # Logs
