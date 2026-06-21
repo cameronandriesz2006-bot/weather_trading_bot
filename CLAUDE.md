@@ -88,14 +88,63 @@ can't happen. See the "Pre-production audit + fixes" session note below.
 
 Re-run the scoreboard after every change. One change at a time, always keep it running.
 
-## Current state (2026-06-16)
+## Current state (2026-06-21)
 
-Model-correctness + cost work (Phases 1–7) is done. We are in **Phase 7 (run-and-evaluate)**:
-the bot is **live on the DigitalOcean server 24/7** (systemd `weatherbot.service`, port 8000 —
-this machine IS the always-on runner; the cloud migration planned 2026-06-15 is DONE) and
-accumulating real scoreboard trades. **Agreed stance (2026-06-16): FREEZE the model and collect
-weeks of data** — only measurement/instrumentation changes during the run; any model change
-restarts the evaluation clock. Let it run and read the scoreboard. See "Session 2026-06-16" below.
+Phases 1–7 (model-correctness + cost) done; in **Phase 7 (run-and-evaluate)**, bot live 24/7 on
+the server (systemd `weatherbot.service`, port 8000; this machine IS the runner). **The
+freeze-and-collect stance turned into targeted action once the data spoke (2026-06-21).** At 58
+settled trades the scoreboard said: our forecast is at **PARITY with the market inland and a clear
+DEFICIT coastal** — model Brier ~0.26 vs market ~0.22, i.e. **no proven edge anywhere yet** (we've
+found where we LOSE, not where we WIN). Root cause: GFS runs ~1.5°F **cold on highs** (−2°F on hot
+days) with a **too-thin ensemble**, and the damage concentrates in **un-resolvable coastal
+stations**. **Shipped (a):** dropped **los_angeles + shanghai** from active trading (the two worst,
+structurally un-correctable stations: LA marine layer, Shanghai has no obs station) and added an
+active-vs-retired dashboard filter (no data deleted). **Next, not yet built:** **(b)** the
+**ECMWF+ICON blend + bias re-fit** — the real model-change / clock-reset; build & validate OFFLINE
+first. **(c)** keep HK/Tokyo/Seoul and watch (small samples). The edge still has to come from the
+trading-side layers; a better forecast only closes the deficit toward the market. See "Session
+2026-06-21" below.
+
+### Session 2026-06-21 — Phase-7 diagnosis; coastal cut SHIPPED; blend evidence (offline); dist tracked
+Read the live scoreboard (58 settled), diagnosed why we don't beat the market, ran offline backtests,
+and shipped the first targeted change. The full analysis lives in the auto-memory
+`forecast-skill-diagnosis-multimodel.md`; summary:
+
+- **Diagnosis (DB + offline).** 58 settled: net ~−$95 (round-tripped from a +$1.1k peak), win 55%,
+  **model Brier 0.261 vs market 0.224 → forecast PARITY inland, DEFICIT coastal, no proven edge.**
+  It's the **HIGHS** (calibration gap +0.20 high vs −0.01 low) in a recent **HEAT regime** (gap
+  spiked 06-18→20). Independent confirms: model-vs-market "who was closer" ≈ coin-flip (27/23) but we
+  lose bigger when wrong; wins & losses have identical disagreement with the price (no edge signature).
+- **Multi-model evidence (offline, NOT deployed).** Skill test (historical-forecast-api vs Meteostat,
+  n=612): equal-weight **GFS+ECMWF+ICON blend** cuts high de-biased RMSE ~10% and ~halves the bias;
+  **ECMWF is ~unbiased in heat where GFS is −2°F.** It's a BLEND not a switch (ECMWF is worse at
+  coastal LA). Dispersion test (n=32, directional): 3-model pool ~doubles the honest spread (fixes the
+  thin tail) vs the bot's arbitrary 1.3×/2°F widening. Re-pricing our OWN trades: blend improves Brier
+  0.265→0.247 (closes ~half the gap to market, **doesn't beat it**); P&L impact **noise-dominated** at
+  n=58. **Bias correction stays but is PER-MODEL** — the current GFS `station_bias.json` would
+  mis-correct the blend; must re-run `bias_backfill` against the blend.
+- **Coastal-exclusion test → criterion is STATION RESOLVABILITY, not "coastal".** Damage = **shanghai
+  −$534** (no obs station) + **los_angeles −$312** (marine layer) [+ seoul −$94, lean]; **hong_kong
+  +$391 BEATS the market** (HKO HQ is a real urban station) and **tokyo +$56** is fine. Cutting
+  shanghai+LA → book +$750; blanket-cutting all 5 coastal is WORSE (+$396) because it throws out HK.
+  The dashboard's amber **"uncorrected"** tag = those 5 coastal cities (it means un-bias-correctable,
+  not geography — Miami/London are coastal but corrected). The cut **stops the bleed → break-even/
+  positive, it does NOT prove an edge** (inland still parity; +P&L is variance-flattered by London/Miami).
+- **SHIPPED (a) — commit `90e3df8`.** Removed `los_angeles,shanghai` from `WEATHER_CITIES`
+  (`config.py`); they STAY in `CITY_CONFIG` so open positions still settle and history is preserved
+  (settlement isn't gated by `WEATHER_CITIES` — verified). New `/api/dashboard` `city_segments`
+  (active vs retired, via `_segment_from_trades`, which also refactors `_compute_bias_segments`);
+  `Scoreboard.tsx` renders an "Active vs retired cities" panel (active row = forward book, retired =
+  preserved history). Verified live: active **+$750** / retired **−$846** over 58 settled. Service
+  restarted; now scans 9 cities.
+- **`frontend/dist` now TRACKED in git — commit `fe316ad`.** A plain `git pull` carries the built
+  dashboard (no `npm run build` needed). Anchored the generic ignore to `/dist/` (Python build still
+  ignored). **Gotcha:** rebuild + commit `dist` after ANY frontend source change or the committed
+  bundle goes stale. (Supersedes earlier "dist is gitignored, rebuild after pull" notes below.)
+- **NOT done / next session:** **(b)** build + OFFLINE-validate the ECMWF+ICON blend + bias re-fit
+  (the real clock-reset; resolve the σ-widening interaction; note its post-cut benefit is mainly
+  heat-insurance since inland is already at parity). **(c)** keep watching HK/Tokyo/Seoul to separate
+  edge from variance. Capacity/edge framing unchanged — see `golive-plan-and-capacity` memory.
 
 ### Session 2026-06-16 — bias badge on every trade row; freeze-and-collect decided; go-live economics
 No model changes (Phase 7 freeze). One code change + a strategic review (committed/pushed to `main`).
