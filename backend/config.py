@@ -139,6 +139,28 @@ class Settings(BaseSettings):
     WEATHER_INTRADAY_SIGMA_ENABLED: bool = True
     WEATHER_INTRADAY_SIGMA_MIN_F: float = 0.3
 
+    # --- Multi-model blend (Phase 5). BUILT 2026-06-21, GATED OFF pending offline
+    # validation — DO NOT enable without first re-fitting the bias table for the blend
+    # AND resolving WEATHER_BLEND_SIGMA_INFLATION (see below). When enabled, the forecast
+    # is an EQUAL-WEIGHT blend of the GFS + ECMWF + ICON ensembles instead of GFS-only.
+    # Offline evidence (n=612 skill backtest): ~10% lower de-biased RMSE on highs and
+    # ~half the cold bias; ECMWF is ~unbiased in heat where GFS runs ~2°F cold. It is a
+    # BLEND, not a switch to ECMWF (ECMWF is worse at coastal microclimates) — the blend
+    # banks best-of-each. Default False => live behaviour is byte-identical to GFS-only.
+    WEATHER_BLEND_ENABLED: bool = False
+    # The ensemble models to blend (Open-Meteo ensemble-api ids). Equal MODEL weight
+    # (each model contributes equally regardless of its member count: GFS 31 / ECMWF 51
+    # / ICON 40). If a model returns no data the blend falls back to whatever is present.
+    WEATHER_BLEND_MODELS: str = "gfs_seamless,ecmwf_ifs025,icon_seamless"
+    # σ-widening for the blend path. The blend's ensemble spread is naturally wider and
+    # better-calibrated than GEFS (dispersion probe: pool spread-skill ~0.49 vs GEFS
+    # ~0.25), so it needs LESS inflation than the GFS path's WEATHER_SIGMA_INFLATION
+    # (1.3). PLACEHOLDER = 1.3 (same) until a LARGE-SAMPLE dispersion/rank-histogram
+    # backtest sets it — the pool is still under-dispersed (~0.49 < 1.0) so SOME widening
+    # stays warranted. THIS IS THE ONE OPEN DESIGN KNOB. Do NOT hand-tune to the n=32
+    # probe; derive it via backend/data/blend_validate.py before enabling the blend.
+    WEATHER_BLEND_SIGMA_INFLATION: float = 1.3
+
     # Per-station bias correction. Raw GFS has repeatable per-station offsets the
     # market has already priced in (e.g. ~2F cold on NYC overnight lows); left
     # uncorrected they masquerade as edge. We measure bias = mean(forecast - actual)

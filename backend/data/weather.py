@@ -162,7 +162,18 @@ METEOSTAT_STATION: Dict[str, Optional[str]] = {
 # station_bias.json holds bias_f = mean(forecast - actual) per station+metric.
 # We SUBTRACT it from the forecast mean before pricing buckets.
 _BIAS_FILE = Path(__file__).with_name("station_bias.json")
+# When the multi-model blend is enabled, the GFS-fitted biases would MIS-correct it
+# (each model has its own offset), so the blend reads its OWN re-fit table. Produced by
+# `python -m backend.data.bias_backfill --blend`.
+_BIAS_BLEND_FILE = Path(__file__).with_name("station_bias_blend.json")
 _bias_cache: Optional[Dict[str, dict]] = None
+
+
+def _bias_path() -> Path:
+    """The station-bias file to read: the blend's re-fit table when the blend is on,
+    else the GFS table. The flag is fixed at startup, so the cache below stays valid."""
+    from backend.config import settings
+    return _BIAS_BLEND_FILE if settings.WEATHER_BLEND_ENABLED else _BIAS_FILE
 
 
 def _load_bias() -> Dict[str, dict]:
@@ -170,7 +181,7 @@ def _load_bias() -> Dict[str, dict]:
     global _bias_cache
     if _bias_cache is None:
         try:
-            _bias_cache = json.loads(_BIAS_FILE.read_text()).get("stations", {}) or {}
+            _bias_cache = json.loads(_bias_path().read_text()).get("stations", {}) or {}
         except Exception:
             _bias_cache = {}
     return _bias_cache
@@ -296,6 +307,7 @@ class EnsembleForecast:
     mean_low: float = 0.0
     std_low: float = 0.0
     num_members: int = 0
+    is_blend: bool = False   # True when built from the multi-model (GFS+ECMWF+ICON) blend
     fetched_at: datetime = field(default_factory=datetime.utcnow)
 
     def __post_init__(self):
@@ -389,7 +401,11 @@ class EnsembleForecast:
 
         floor = settings.WEATHER_SIGMA_FLOOR_F * scale
         per_lead_day = settings.WEATHER_SIGMA_PER_LEAD_DAY_F * scale
-        base = max(raw_sigma * settings.WEATHER_SIGMA_INFLATION, floor)
+        # The blend's ensemble is naturally better-dispersed, so it gets its own (lower,
+        # once validated) inflation factor; the GFS path is unchanged.
+        inflation = (settings.WEATHER_BLEND_SIGMA_INFLATION if self.is_blend
+                     else settings.WEATHER_SIGMA_INFLATION)
+        base = max(raw_sigma * inflation, floor)
         lead_days = max(0, (self.target_date - date.today()).days)
         return base + lead_days * per_lead_day
 
@@ -527,6 +543,67 @@ def _celsius_to_fahrenheit(c: float) -> float:
     return c * 9.0 / 5.0 + 32.0
 
 
+# --- Multi-model blend helpers (config.WEATHER_BLEND_ENABLED; built 2026-06-21) -------
+# ensemble-api suffixes each model's member keys distinctively, e.g.
+#   temperature_2m_max_member03_ncep_gefs_seamless / _ecmwf_ifs025_ensemble / _icon_seamless_eps
+# Map each configured model id to a distinctive substring of its response keys.
+_BLEND_MODEL_SUFFIX = {
+    "gfs_seamless": "gefs_seamless",
+    "ecmwf_ifs025": "ecmwf_ifs025",
+    "icon_seamless": "icon_seamless",
+}
+
+
+def _match_blend_model(key: str, models: List[str]) -> Optional[str]:
+    """Which configured model a response key belongs to (by distinctive substring)."""
+    for m in models:
+        if _BLEND_MODEL_SUFFIX.get(m, m) in key:
+            return m
+    return None
+
+
+def _quantile_sorted(s: List[float], q: float) -> float:
+    """Linear-interpolated quantile of an ALREADY-SORTED list."""
+    if len(s) == 1:
+        return s[0]
+    pos = q * (len(s) - 1)
+    lo = int(math.floor(pos))
+    hi = min(lo + 1, len(s) - 1)
+    return s[lo] * (1 - (pos - lo)) + s[hi] * (pos - lo)
+
+
+def _equal_weight_pool(per_model_members: List[List[float]], k: int = 64) -> List[float]:
+    """Pool several models' member lists with EQUAL MODEL WEIGHT by resampling each to k
+    quantile points (so a model with more members can't dominate). Empty models skipped.
+    The result is a representative member sample of the blended distribution (it feeds the
+    secondary member-fraction/agreement helpers; the exact pricing mean/std come from
+    _mixture_stats)."""
+    pool: List[float] = []
+    for members in per_model_members:
+        if not members:
+            continue
+        s = sorted(members)
+        if len(s) == 1:
+            pool.extend(s * k)
+        else:
+            pool.extend(_quantile_sorted(s, (i + 0.5) / k) for i in range(k))
+    return pool
+
+
+def _mixture_stats(per_model_members: List[List[float]]) -> tuple:
+    """Exact EQUAL-WEIGHT mixture (mean, std): mean of the per-model means, and
+    sqrt(mean within-model variance + variance of the means) — the law of total variance
+    with equal weights. This is the blend's pricing mean/std."""
+    present = [m for m in per_model_members if m]
+    if not present:
+        return 0.0, 0.0
+    means = [statistics.mean(m) for m in present]
+    within = [statistics.pvariance(m) if len(m) > 1 else 0.0 for m in present]
+    mu = statistics.mean(means)
+    between = statistics.pvariance(means) if len(means) > 1 else 0.0
+    return mu, math.sqrt(statistics.mean(within) + between)
+
+
 async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = None,
                                   cache_only: bool = False) -> Optional[EnsembleForecast]:
     """
@@ -562,9 +639,14 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
     unit = city.get("unit", "F")
     api_temp_unit = "celsius" if unit == "C" else "fahrenheit"
 
+    from backend.config import settings   # local import (module convention; avoids cycles)
+    blend_on = settings.WEATHER_BLEND_ENABLED
+    blend_models = [m.strip() for m in settings.WEATHER_BLEND_MODELS.split(",") if m.strip()]
+
     try:
         async with httpx.AsyncClient(timeout=15.0) as client:
-            # Open-Meteo Ensemble API — GFS ensemble with 31 members
+            # Open-Meteo Ensemble API — GFS ensemble (31 members) by default, or the
+            # equal-weight GFS+ECMWF+ICON blend when WEATHER_BLEND_ENABLED.
             params = {
                 "latitude": city["lat"],
                 "longitude": city["lon"],
@@ -572,7 +654,7 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
                 "temperature_unit": api_temp_unit,
                 "start_date": target_date.isoformat(),
                 "end_date": target_date.isoformat(),
-                "models": "gfs_seamless",
+                "models": ",".join(blend_models) if blend_on else "gfs_seamless",
                 # Aggregate the daily high/low over the station's LOCAL day, not a
                 # UTC day — markets settle on the local calendar day.
                 "timezone": "auto",
@@ -587,22 +669,45 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
 
             daily = data.get("daily", {})
 
-            # Open-Meteo returns each ensemble member as a separate key:
-            #   temperature_2m_max (control), temperature_2m_max_member01, ..., _member30
-            # Collect all member values for highs and lows
-            member_highs = []
-            member_lows = []
-
-            for key, values in daily.items():
-                if not isinstance(values, list) or not values:
-                    continue
-                val = values[0]
-                if val is None:
-                    continue
-                if "temperature_2m_max" in key:
-                    member_highs.append(float(val))
-                elif "temperature_2m_min" in key:
-                    member_lows.append(float(val))
+            highs_by_model: List[List[float]] = []
+            lows_by_model: List[List[float]] = []
+            if blend_on:
+                # Group members by model, then pool with EQUAL MODEL WEIGHT.
+                ph = {m: [] for m in blend_models}
+                pl = {m: [] for m in blend_models}
+                for key, values in daily.items():
+                    if not isinstance(values, list) or not values:
+                        continue
+                    val = values[0]
+                    if val is None:
+                        continue
+                    m = _match_blend_model(key, blend_models)
+                    if m is None:
+                        continue
+                    if "temperature_2m_max" in key:
+                        ph[m].append(float(val))
+                    elif "temperature_2m_min" in key:
+                        pl[m].append(float(val))
+                highs_by_model = [ph[m] for m in blend_models]
+                lows_by_model = [pl[m] for m in blend_models]
+                member_highs = _equal_weight_pool(highs_by_model)
+                member_lows = _equal_weight_pool(lows_by_model)
+            else:
+                # Open-Meteo returns each ensemble member as a separate key:
+                #   temperature_2m_max (control), temperature_2m_max_member01, ..., _member30
+                # Collect all member values for highs and lows
+                member_highs = []
+                member_lows = []
+                for key, values in daily.items():
+                    if not isinstance(values, list) or not values:
+                        continue
+                    val = values[0]
+                    if val is None:
+                        continue
+                    if "temperature_2m_max" in key:
+                        member_highs.append(float(val))
+                    elif "temperature_2m_min" in key:
+                        member_lows.append(float(val))
 
             if not member_highs:
                 logger.warning(f"No ensemble data for {city_key} on {target_date}")
@@ -616,12 +721,18 @@ async def fetch_ensemble_forecast(city_key: str, target_date: Optional[date] = N
                 member_highs=member_highs,
                 member_lows=member_lows,
                 unit=unit,
+                is_blend=blend_on,
             )
+            if blend_on:
+                # Price on the EXACT equal-weight mixture mean/std (the pooled member list
+                # is a resampled approximation; these are exact).
+                forecast.mean_high, forecast.std_high = _mixture_stats(highs_by_model)
+                forecast.mean_low, forecast.std_low = _mixture_stats(lows_by_model)
 
             _forecast_cache[cache_key] = (now, forecast)
-            logger.info(f"Ensemble forecast for {city['name']} on {target_date}: "
-                        f"High {forecast.mean_high:.1f}{unit} +/- {forecast.std_high:.1f}{unit} "
-                        f"({forecast.num_members} members)")
+            logger.info(f"{'Blend' if blend_on else 'Ensemble'} forecast for {city['name']} on "
+                        f"{target_date}: High {forecast.mean_high:.1f}{unit} +/- "
+                        f"{forecast.std_high:.1f}{unit} ({forecast.num_members} members)")
 
             return forecast
 

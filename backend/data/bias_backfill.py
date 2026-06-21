@@ -39,6 +39,7 @@ ENSEMBLE_URL = "https://ensemble-api.open-meteo.com/v1/ensemble"
 METEOSTAT_DAILY_URL = "https://d.meteostat.net/app/proxy/stations/daily"
 METEOSTAT_HEADERS = {"User-Agent": "Mozilla/5.0"}  # the proxy 403s a bare client
 BIAS_FILE = Path(__file__).with_name("station_bias.json")
+BIAS_BLEND_FILE = Path(__file__).with_name("station_bias_blend.json")
 
 DEFAULT_WINDOW_DAYS = 60
 # Observations lag real time slightly; end the window a couple days back so the
@@ -70,16 +71,17 @@ def _c_to_native(c: Optional[float], unit: str) -> Optional[float]:
 
 async def _fetch_forecast_daily(
     client: httpx.AsyncClient, lat: float, lon: float,
-    start: date, end: date, temp_unit: str,
+    start: date, end: date, temp_unit: str, model: str = "gfs_seamless",
 ) -> Dict[str, Dict[str, Optional[float]]]:
-    """Archived GFS daily max/min in `temp_unit`, keyed by ISO date. Local-day
-    aggregation (timezone=auto) matches the live forecast and market settlement."""
+    """Archived deterministic daily max/min for one ``model`` in `temp_unit`, keyed by
+    ISO date. Local-day aggregation (timezone=auto) matches the live forecast and market
+    settlement."""
     params = {
         "latitude": lat, "longitude": lon,
         "start_date": start.isoformat(), "end_date": end.isoformat(),
         "daily": "temperature_2m_max,temperature_2m_min",
         "temperature_unit": temp_unit, "timezone": "auto",
-        "models": "gfs_seamless",
+        "models": model,
     }
     r = await client.get(HIST_FORECAST_URL, params=params)
     r.raise_for_status()
@@ -96,17 +98,49 @@ async def _fetch_forecast_daily(
     return out
 
 
+def _avg_forecasts(per_model: List[Dict[str, Dict[str, Optional[float]]]]
+                   ) -> Dict[str, Dict[str, Optional[float]]]:
+    """Equal-weight mean across models per date+metric (the blend's forecast). A date is
+    kept only where EVERY model has a non-null value, so the blend mean is well-defined."""
+    if not per_model:
+        return {}
+    dates = set(per_model[0])
+    for d in per_model[1:]:
+        dates &= set(d)
+    out: Dict[str, Dict[str, Optional[float]]] = {}
+    for day in dates:
+        row: Dict[str, Optional[float]] = {}
+        for metric in ("high", "low"):
+            vals = [m[day].get(metric) for m in per_model]
+            row[metric] = (sum(vals) / len(vals)) if all(v is not None for v in vals) else None
+        out[day] = row
+    return out
+
+
+async def _fetch_forecast_blend(
+    client: httpx.AsyncClient, lat: float, lon: float,
+    start: date, end: date, temp_unit: str, models: List[str],
+) -> Dict[str, Dict[str, Optional[float]]]:
+    """Equal-weight blend of several models' archived deterministic daily max/min — the
+    forecast the bot prices on when WEATHER_BLEND_ENABLED. One call per model, averaged."""
+    per_model = [await _fetch_forecast_daily(client, lat, lon, start, end, temp_unit, m)
+                 for m in models]
+    return _avg_forecasts(per_model)
+
+
 async def _fetch_ensemble_recent(
-    client: httpx.AsyncClient, lat: float, lon: float, temp_unit: str, past_days: int = 10,
+    client: httpx.AsyncClient, lat: float, lon: float, temp_unit: str,
+    past_days: int = 10, models: str = "gfs_seamless",
 ) -> Dict[str, Dict[str, Optional[float]]]:
     """Live-model (ensemble-api) recent daily max/min, ensemble MEAN per day, in
     `temp_unit`. Only the last few days carry data; used to validate that the
-    historical-forecast source matches the model the bot actually trades on."""
+    historical-forecast source matches the model(s) the bot actually trades on.
+    ``models`` may be comma-joined for the blend (mean over all members of all models)."""
     params = {
         "latitude": lat, "longitude": lon,
         "daily": "temperature_2m_max,temperature_2m_min",
         "temperature_unit": temp_unit, "timezone": "auto",
-        "models": "gfs_seamless", "past_days": past_days, "forecast_days": 1,
+        "models": models, "past_days": past_days, "forecast_days": 1,
     }
     r = await client.get(ENSEMBLE_URL, params=params)
     r.raise_for_status()
@@ -189,9 +223,14 @@ def _errors(forecast: dict, actual: dict, metric: str) -> List[float]:
     return errs
 
 
-async def compute_all(days: int = DEFAULT_WINDOW_DAYS) -> dict:
-    """Compute bias = mean(forecast - observed) per station and metric, in the
-    city's native unit, using realized station observations as the 'actual'."""
+async def compute_all(days: int = DEFAULT_WINDOW_DAYS,
+                      models: Optional[List[str]] = None) -> dict:
+    """Compute bias = mean(forecast - observed) per station and metric, in the city's
+    native unit, using realized station observations as the 'actual'. ``models`` set =
+    re-fit for the equal-weight BLEND of those models (writes station_bias_blend.json);
+    None = GFS-only (the live default, writes station_bias.json)."""
+    blend = bool(models)
+    ens_models = ",".join(models) if blend else "gfs_seamless"
     # Fetch through today so the consistency check overlaps the live ensemble's
     # recent days; obs naturally lack the last day or two, and those forecast days
     # simply drop out of the bias pairing (no matching observation).
@@ -215,13 +254,15 @@ async def compute_all(days: int = DEFAULT_WINDOW_DAYS) -> dict:
                 continue
 
             temp_unit = "celsius" if unit == "C" else "fahrenheit"
-            forecast = await _fetch_forecast_daily(client, cfg["lat"], cfg["lon"], start, end, temp_unit)
+            forecast = (await _fetch_forecast_blend(client, cfg["lat"], cfg["lon"], start, end, temp_unit, models)
+                        if blend else
+                        await _fetch_forecast_daily(client, cfg["lat"], cfg["lon"], start, end, temp_unit))
             actual = await _fetch_obs_daily(client, station_id, start, end, unit)
 
-            # Guard: only trust this bias if the 60-day forecast source agrees with
-            # the live ensemble model on recent days (else it's a different model's
-            # bias — e.g. coastal grid-snapping divergence at Incheon).
-            ensemble = await _fetch_ensemble_recent(client, cfg["lat"], cfg["lon"], temp_unit)
+            # Guard: only trust this bias if the forecast source agrees with the live
+            # ensemble model(s) on recent days (else it's a different model's bias —
+            # e.g. coastal grid-snapping divergence at Incheon).
+            ensemble = await _fetch_ensemble_recent(client, cfg["lat"], cfg["lon"], temp_unit, models=ens_models)
             consistency = _consistency_error(forecast, ensemble)
             tol = CONSISTENCY_MAX_F * ((1.0 / 1.8) if unit == "C" else 1.0)
             if consistency is None or consistency > tol:
@@ -246,7 +287,8 @@ async def compute_all(days: int = DEFAULT_WINDOW_DAYS) -> dict:
     return {
         "computed_at": datetime.utcnow().isoformat(),
         "window_days": days,
-        "method": "gfs_seamless_vs_meteostat_station_obs",
+        "models": models if blend else ["gfs_seamless"],
+        "method": (f"blend({'+'.join(models)})" if blend else "gfs_seamless") + "_vs_meteostat_station_obs",
         "note": ("bias_f = mean(forecast - observed) in each city's NATIVE unit "
                  "(F US / C intl); SUBTRACT from forecast mean before pricing."),
         "stations": stations,
@@ -261,12 +303,22 @@ def main():
     parser = argparse.ArgumentParser(description="Backfill per-station forecast bias.")
     parser.add_argument("--days", type=int, default=DEFAULT_WINDOW_DAYS,
                         help=f"history window in days (default {DEFAULT_WINDOW_DAYS})")
+    parser.add_argument("--blend", action="store_true",
+                        help="re-fit for the multi-model blend (config.WEATHER_BLEND_MODELS) "
+                             "-> station_bias_blend.json (else GFS-only -> station_bias.json)")
     args = parser.parse_args()
 
-    data = asyncio.run(compute_all(args.days))
-    write_bias(data)
+    if args.blend:
+        from backend.config import settings
+        models = [m.strip() for m in settings.WEATHER_BLEND_MODELS.split(",") if m.strip()]
+        out_path = BIAS_BLEND_FILE
+    else:
+        models, out_path = None, BIAS_FILE
 
-    print(f"Wrote {BIAS_FILE}  (window {data['window_days']}d, {data['method']})")
+    data = asyncio.run(compute_all(args.days, models=models))
+    write_bias(data, out_path)
+
+    print(f"Wrote {out_path}  (window {data['window_days']}d, {data['method']})")
     for city, m in data["stations"].items():
         u = m.get("unit", "F")
         skip = f"  [{m['skipped']}]" if m.get("skipped") else ""

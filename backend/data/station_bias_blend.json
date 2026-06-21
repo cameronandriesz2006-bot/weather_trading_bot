@@ -1,0 +1,169 @@
+{
+  "computed_at": "2026-06-21T06:16:24.494727",
+  "window_days": 60,
+  "models": [
+    "gfs_seamless",
+    "ecmwf_ifs025",
+    "icon_seamless"
+  ],
+  "method": "blend(gfs_seamless+ecmwf_ifs025+icon_seamless)_vs_meteostat_station_obs",
+  "note": "bias_f = mean(forecast - observed) in each city's NATIVE unit (F US / C intl); SUBTRACT from forecast mean before pricing.",
+  "stations": {
+    "nyc": {
+      "unit": "F",
+      "station": "72503",
+      "high": {
+        "bias_f": 0.179,
+        "stdev_f": 1.861,
+        "samples": 63
+      },
+      "low": {
+        "bias_f": -0.841,
+        "stdev_f": 2.08,
+        "samples": 63
+      }
+    },
+    "chicago": {
+      "unit": "F",
+      "station": "72530",
+      "high": {
+        "bias_f": -0.109,
+        "stdev_f": 1.308,
+        "samples": 63
+      },
+      "low": {
+        "bias_f": -0.437,
+        "stdev_f": 1.745,
+        "samples": 63
+      }
+    },
+    "miami": {
+      "unit": "F",
+      "station": "72202",
+      "high": {
+        "bias_f": -1.663,
+        "stdev_f": 1.234,
+        "samples": 63
+      },
+      "low": {
+        "bias_f": -0.346,
+        "stdev_f": 1.463,
+        "samples": 63
+      }
+    },
+    "los_angeles": {
+      "unit": "F",
+      "station": "72295",
+      "high": {
+        "bias_f": 2.601,
+        "stdev_f": 2.069,
+        "samples": 63
+      },
+      "low": {
+        "bias_f": -1.046,
+        "stdev_f": 1.216,
+        "samples": 63
+      }
+    },
+    "denver": {
+      "unit": "F",
+      "station": "KBKF0",
+      "high": {
+        "bias_f": -1.111,
+        "stdev_f": 1.76,
+        "samples": 55
+      },
+      "low": {
+        "bias_f": 0.099,
+        "stdev_f": 1.998,
+        "samples": 55
+      }
+    },
+    "london": {
+      "unit": "C",
+      "station": "EGLC0",
+      "high": {
+        "bias_f": 0.034,
+        "stdev_f": 0.69,
+        "samples": 55
+      },
+      "low": {
+        "bias_f": -0.29,
+        "stdev_f": 0.668,
+        "samples": 55
+      }
+    },
+    "tokyo": {
+      "unit": "C",
+      "station": "47671",
+      "high": {
+        "bias_f": 0.151,
+        "stdev_f": 0.906,
+        "samples": 63
+      },
+      "low": {
+        "bias_f": -0.177,
+        "stdev_f": 0.706,
+        "samples": 63
+      }
+    },
+    "seoul": {
+      "unit": "C",
+      "station": "47113",
+      "high": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "low": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "skipped": "source_inconsistent(1.4>1.1)"
+    },
+    "paris": {
+      "unit": "C",
+      "station": "07150",
+      "high": {
+        "bias_f": -0.343,
+        "stdev_f": 0.697,
+        "samples": 58
+      },
+      "low": {
+        "bias_f": 0.156,
+        "stdev_f": 0.703,
+        "samples": 58
+      }
+    },
+    "shanghai": {
+      "unit": "C",
+      "station": null,
+      "high": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "low": {
+        "bias_f": 0.0,
+        "stdev_f": 0.0,
+        "samples": 0
+      },
+      "skipped": "no_obs_station"
+    },
+    "hong_kong": {
+      "unit": "C",
+      "station": "45007",
+      "high": {
+        "bias_f": -1.643,
+        "stdev_f": 0.917,
+        "samples": 63
+      },
+      "low": {
+        "bias_f": -0.841,
+        "stdev_f": 0.906,
+        "samples": 63
+      }
+    }
+  }
+}
