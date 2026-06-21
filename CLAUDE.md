@@ -141,10 +141,17 @@ and shipped the first targeted change. The full analysis lives in the auto-memor
   dashboard (no `npm run build` needed). Anchored the generic ignore to `/dist/` (Python build still
   ignored). **Gotcha:** rebuild + commit `dist` after ANY frontend source change or the committed
   bundle goes stale. (Supersedes earlier "dist is gitignored, rebuild after pull" notes below.)
-- **NOT done / next session:** **(b)** build + OFFLINE-validate the ECMWF+ICON blend + bias re-fit
-  (the real clock-reset; resolve the σ-widening interaction; note its post-cut benefit is mainly
-  heat-insurance since inland is already at parity). **(c)** keep watching HK/Tokyo/Seoul to separate
-  edge from variance. Capacity/edge framing unchanged — see `golive-plan-and-capacity` memory.
+- **(b) BUILT this session, GATED OFF (commit `89004e0`).** Full GFS+ECMWF+ICON blend behind
+  `WEATHER_BLEND_ENABLED` (default False → live byte-identical): `weather.py` multi-model fetch +
+  EQUAL-MODEL-WEIGHT member pooling + `EnsembleForecast.is_blend` σ-inflation + the blend reads its
+  own re-fit `station_bias_blend.json` (Tokyo+HK become correctable under the blend). `bias_backfill.py
+  --blend`, `tests/test_blend.py`, and `backend/data/blend_validate.py` (the offline pre-deploy gate).
+  Verified flag-off identical + flag-on smoke sane (NYC 83.9±1.7°F vs GFS 82.8±1.2°F). **To DEPLOY
+  (the real clock-reset):** run `blend_validate` → set `WEATHER_BLEND_SIGMA_INFLATION` (placeholder
+  1.3, the one open knob) → regen blend bias → flip the flag → restart.
+- **NOT done / next session:** validate + deploy (b) per the gate above; **(c)** keep watching
+  HK/Tokyo/Seoul to separate edge from variance. Capacity/edge framing unchanged — see
+  `golive-plan-and-capacity` memory.
 
 ### Session 2026-06-16 — bias badge on every trade row; freeze-and-collect decided; go-live economics
 No model changes (Phase 7 freeze). One code change + a strategic review (committed/pushed to `main`).
