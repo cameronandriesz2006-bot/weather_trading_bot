@@ -8,6 +8,13 @@ function usd(x: number): string {
   return `${x >= 0 ? '+' : '-'}$${Math.abs(x).toFixed(2)}`
 }
 
+/** Format the scoreboard-epoch ISO (UTC-naive from the backend) as a readable date. */
+function fmtEpoch(iso: string): string {
+  const d = new Date(iso.endsWith('Z') ? iso : iso + 'Z')
+  if (isNaN(d.getTime())) return iso
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
+}
+
 /** Corrected-vs-uncorrected cohort table: does the bias model actually help? */
 function BiasCohorts({ segments }: { segments: BiasSegment[] }) {
   if (!segments.length) return null
@@ -141,10 +148,11 @@ function Metric({ label, value, hint, tone = 'neutral' }: {
   )
 }
 
-export function Scoreboard({ calibration, biasSegments = [], citySegments = [] }: {
+export function Scoreboard({ calibration, biasSegments = [], citySegments = [], epoch = null }: {
   calibration: CalibrationSummary | null
   biasSegments?: BiasSegment[]
   citySegments?: BiasSegment[]
+  epoch?: string | null
 }) {
   const settled = calibration?.total_with_outcome ?? 0
 
@@ -153,6 +161,12 @@ export function Scoreboard({ calibration, biasSegments = [], citySegments = [] }
       <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-2">
         Scoreboard &amp; calibration
       </h2>
+      {epoch && (
+        <p className="text-[11px] text-neutral-500 mb-2">
+          Scored from the blend model going live · {fmtEpoch(epoch)}. Earlier trades are kept
+          (still in the trade log) but excluded here so the new model&apos;s record reads clean.
+        </p>
+      )}
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 p-5">
         {settled === 0 ? (
           <div className="text-sm text-neutral-400 leading-relaxed">

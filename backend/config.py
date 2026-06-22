@@ -55,7 +55,11 @@ class Settings(BaseSettings):
 
     # Weather trading settings
     WEATHER_ENABLED: bool = True
-    WEATHER_SCAN_INTERVAL_SECONDS: int = 300  # 5 min
+    WEATHER_SCAN_INTERVAL_SECONDS: int = 900  # 15 min. Raised from 5 min (2026-06-22) to
+    # cut API load after the blend tripled per-forecast cost and exhausted the Open-Meteo
+    # free-tier daily quota. Daily-temp markets settle once/day, so 15-min scanning is plenty;
+    # the 90-min forecast cache (_CACHE_TTL in weather.py) absorbs repeated scans so this
+    # mainly throttles the per-scan Meteostat/Polymarket/order-book calls.
     WEATHER_SETTLEMENT_INTERVAL_SECONDS: int = 1800  # 30 min
     WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% minimum edge to trade
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
@@ -146,20 +150,36 @@ class Settings(BaseSettings):
     # Offline evidence (n=612 skill backtest): ~10% lower de-biased RMSE on highs and
     # ~half the cold bias; ECMWF is ~unbiased in heat where GFS runs ~2°F cold. It is a
     # BLEND, not a switch to ECMWF (ECMWF is worse at coastal microclimates) — the blend
-    # banks best-of-each. Default False => live behaviour is byte-identical to GFS-only.
-    WEATHER_BLEND_ENABLED: bool = False
+    # banks best-of-each. ENABLED 2026-06-22 after blend_validate passed (skill: blend
+    # beats GFS by ~16%/18% de-biased RMSE on highs/lows over n=543; bias table re-fit;
+    # σ-inflation derived = 2.04). Flip back to False to revert to GFS-only instantly.
+    WEATHER_BLEND_ENABLED: bool = True
     # The ensemble models to blend (Open-Meteo ensemble-api ids). Equal MODEL weight
     # (each model contributes equally regardless of its member count: GFS 31 / ECMWF 51
     # / ICON 40). If a model returns no data the blend falls back to whatever is present.
     WEATHER_BLEND_MODELS: str = "gfs_seamless,ecmwf_ifs025,icon_seamless"
-    # σ-widening for the blend path. The blend's ensemble spread is naturally wider and
-    # better-calibrated than GEFS (dispersion probe: pool spread-skill ~0.49 vs GEFS
-    # ~0.25), so it needs LESS inflation than the GFS path's WEATHER_SIGMA_INFLATION
-    # (1.3). PLACEHOLDER = 1.3 (same) until a LARGE-SAMPLE dispersion/rank-histogram
-    # backtest sets it — the pool is still under-dispersed (~0.49 < 1.0) so SOME widening
-    # stays warranted. THIS IS THE ONE OPEN DESIGN KNOB. Do NOT hand-tune to the n=32
-    # probe; derive it via backend/data/blend_validate.py before enabling the blend.
-    WEATHER_BLEND_SIGMA_INFLATION: float = 1.3
+    # σ-widening for the blend path. DERIVED via backend/data/blend_validate.py on
+    # 2026-06-22 (n=30 city-days): the 3-model pool's spread-skill ratio is ~0.49 (vs
+    # GEFS ~0.25), i.e. still under-dispersed, so spread is multiplied by ~1/0.49 ≈ 2.04
+    # to calibrate (lifted range-coverage 50%→83%, target ~90%). NOTE this is MORE
+    # widening than the GFS path (1.3) — the earlier "the blend needs less" guess was
+    # wrong: a single model's 31 members agree too much, and even the 3-model pool is
+    # still over-confident (ratio 0.49 < 1.0). CAVEAT: the dispersion sample is shallow (~30 days =
+    # ensemble-api archive depth), so 2.04 is a STARTING POINT — re-run blend_validate as
+    # the archive deepens / the season shifts and watch live coverage. The skill result
+    # (n=543) is solid; this knob is the soft part, and erring wider is the safe side.
+    WEATHER_BLEND_SIGMA_INFLATION: float = 2.04
+
+    # Scoreboard visual-reset cutoff (UTC ISO8601, matches the UTC-naive DB timestamps).
+    # When SET, the dashboard scoreboard (calibration + cohort tables) counts ONLY trades &
+    # signals entered from this instant forward — a SOFT reset that hides old rows while
+    # leaving them in the live DB. CURRENTLY EMPTY (disabled): on 2026-06-22 we instead did
+    # a HARD reset — the pre-blend book was archived to archive/*.db and the live tables +
+    # bankroll were cleared to a fresh $10k (see archive/README.md), so the live DB itself
+    # is already clean and no filter is needed. Kept (code lives in api/main.py
+    # _scoreboard_epoch + the three aggregations) for the next model change, when a soft
+    # hide may be preferable to archiving. Empty string => score whatever is in the DB.
+    SCOREBOARD_EPOCH: str = ""
 
     # Per-station bias correction. Raw GFS has repeatable per-station offsets the
     # market has already priced in (e.g. ~2F cold on NYC overnight lows); left

@@ -17,6 +17,10 @@ build/
 *.db
 *.sqlite3
 
+# Pre-reset DB archives (server-local runtime data; the .db can't travel via git
+# anyway, and the README only makes sense next to it — keep the whole dir local)
+archive/
+
 # Environment
 .env
 .env.local

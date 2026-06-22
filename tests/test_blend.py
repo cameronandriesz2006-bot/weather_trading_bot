@@ -39,11 +39,18 @@ def test_mixture_stats():
     assert 8.0 < sd < 8.7
 
 
-def test_flag_off_is_unchanged():
-    assert settings.WEATHER_BLEND_ENABLED is False              # SHIPS OFF
+def test_flag_on_after_deploy():
+    # DEPLOYED ON 2026-06-22 after blend_validate passed (skill beats GFS; σ-infl=2.04).
+    # Guards the intended live state: if someone reverts the flag, this fails loudly.
+    # Flip both this assertion and the bias-file name back if reverting to GFS-only.
+    assert settings.WEATHER_BLEND_ENABLED is True               # SHIPS ON (was off pre-deploy)
+    assert W._bias_path().name == "station_bias_blend.json"     # blend bias file while on
+    # Per-instance is_blend is an explicit constructor arg (NOT derived from the flag):
+    # the scan passes is_blend=WEATHER_BLEND_ENABLED, so a bare forecast still defaults off.
     f = W.EnsembleForecast("nyc", "NYC", date.today(), [80, 82, 84], [60, 62, 64], unit="F")
     assert f.is_blend is False
-    assert W._bias_path().name == "station_bias.json"           # GFS bias file while off
+    assert W.EnsembleForecast("nyc", "NYC", date.today(), [80, 82, 84], [60, 62, 64],
+                              unit="F", is_blend=True).is_blend is True
 
 
 def test_is_blend_sigma_inflation_switch():

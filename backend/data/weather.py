@@ -526,13 +526,16 @@ class EnsembleForecast:
 # and never recovers. Successful forecasts are held for _CACHE_TTL; failures only
 # for _FAIL_TTL, so a recovered API is retried within the minute.
 _forecast_cache: Dict[str, tuple] = {}
-# Open-Meteo's free tier is ~10,000 requests/DAY (per IP). With ~33 unique
-# (city, date) forecasts, a 30-min cache costs ~1,600/day — a comfortable 6x
-# margin (a 15-min cache was ~3,200/day, still safe, but day-of testing + the old
-# failure-cascade blew past 10k and exhausted the quota until the next UTC day).
-_CACHE_TTL = 1800      # 30 minutes (successful forecast) — daily-temp forecasts
-                       # barely move in 30 min, and the observed-floor adds intraday
-                       # freshness near settlement.
+# Open-Meteo's free tier is ~10,000 requests/DAY (per IP). Daily cost is roughly
+# ~33 unique (city, date) forecasts * (1440 / cache_minutes) * models_per_call.
+# The BLEND fetches 3 models per call (gfs+ecmwf+icon) — ~3x the per-call cost of the
+# old GFS-only path. So the 30-min cache that was a comfy ~1,600/day (6x margin) became
+# ~4,800/day under the blend, and a day of blend validation + restarts blew past 10k and
+# exhausted the quota until the next UTC reset (the 2026-06-22 lockout). Bumping the cache
+# 30 -> 90 min cancels the blend's 3x: 33 * 16 * 3 ~= 1,600/day again (~6x margin restored).
+_CACHE_TTL = 5400      # 90 minutes (successful forecast). Daily high/low barely move in
+                       # 90 min; Open-Meteo refreshes the ensembles only every ~6h, and the
+                       # observed-floor adds intraday freshness near settlement.
 # When a fetch FAILS (e.g. the daily limit is hit), back off for a while instead
 # of retrying every scan — that both saves pointless load and avoids keeping a
 # rolling-window limit pegged. Recovery is still noticed within this interval.

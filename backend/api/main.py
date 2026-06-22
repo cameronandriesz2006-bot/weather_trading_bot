@@ -210,6 +210,9 @@ class DashboardData(BaseModel):
     city_segments: List[BiasSegment] = []   # active (still traded) vs retired cities
     weather_signals: List[WeatherSignalResponse] = []
     weather_forecasts: List[WeatherForecastResponse] = []
+    # UTC ISO cutoff the scoreboard is scored from (config.SCOREBOARD_EPOCH); None =
+    # full history. The UI shows it so the reset is self-explanatory.
+    scoreboard_epoch: Optional[str] = None
 
 
 class EventResponse(BaseModel):
@@ -419,6 +422,22 @@ def _active_city_keys() -> set:
     return {c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()}
 
 
+def _scoreboard_epoch() -> Optional[datetime]:
+    """Visual-reset cutoff for the scoreboard (config.SCOREBOARD_EPOCH). The scoreboard
+    aggregates (calibration + cohort tables) count only trades/signals entered at/after
+    this UTC instant, so a model change starts a clean scorecard WITHOUT deleting history
+    (pre-epoch rows stay in the DB and the trade log). Returns None when unset/invalid =>
+    score the full history."""
+    raw = (settings.SCOREBOARD_EPOCH or "").strip()
+    if not raw:
+        return None
+    try:
+        return datetime.fromisoformat(raw)
+    except ValueError:
+        logger.warning(f"Invalid SCOREBOARD_EPOCH {raw!r}; scoring full history")
+        return None
+
+
 def _segment_from_trades(label: str, cohort: List[Trade]) -> BiasSegment:
     """Score one cohort of executed trades from real outcomes (shared by the bias and
     the active/retired city breakdowns so both use identical math)."""
@@ -447,11 +466,18 @@ def _segment_from_trades(label: str, cohort: List[Trade]) -> BiasSegment:
 
 def _compute_bias_segments(db: Session) -> List[BiasSegment]:
     """Split executed weather trades into bias-corrected vs uncorrected cohorts and
-    score each from real outcomes. Trades with a NULL tag (legacy) are omitted."""
-    return [
-        _segment_from_trades(label, db.query(Trade).filter(Trade.bias_corrected == flag).all())
-        for label, flag in (("corrected", True), ("uncorrected", False))
-    ]
+    score each from real outcomes. Trades with a NULL tag (legacy) are omitted.
+    Honors the scoreboard epoch (post-reset trades only)."""
+    epoch = _scoreboard_epoch()
+
+    def cohort(flag: bool) -> List[Trade]:
+        q = db.query(Trade).filter(Trade.bias_corrected == flag)
+        if epoch is not None:
+            q = q.filter(Trade.timestamp >= epoch)
+        return q.all()
+
+    return [_segment_from_trades(label, cohort(flag))
+            for label, flag in (("corrected", True), ("uncorrected", False))]
 
 
 def _compute_city_status_segments(db: Session) -> List[BiasSegment]:
@@ -462,8 +488,12 @@ def _compute_city_status_segments(db: Session) -> List[BiasSegment]:
     the DB — they simply move into the 'retired' bucket here)."""
     from backend.data.weather_markets import parse_event_slug
     active = _active_city_keys()
+    epoch = _scoreboard_epoch()
+    q = db.query(Trade)
+    if epoch is not None:
+        q = q.filter(Trade.timestamp >= epoch)
     buckets: Dict[str, List[Trade]] = {"active": [], "retired": []}
-    for t in db.query(Trade).all():
+    for t in q.all():
         parsed = parse_event_slug(t.event_slug or "")
         if not parsed:
             continue  # non-weather / unparseable slug
@@ -472,9 +502,16 @@ def _compute_city_status_segments(db: Session) -> List[BiasSegment]:
 
 
 def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
-    """Compute calibration summary from settled signals."""
-    total_signals = db.query(Signal).count()
-    settled_signals = db.query(Signal).filter(Signal.outcome_correct.isnot(None)).all()
+    """Compute calibration summary from settled signals. Honors the scoreboard epoch
+    (post-reset signals only) so a model change starts a clean calibration scorecard."""
+    epoch = _scoreboard_epoch()
+    total_q = db.query(Signal)
+    settled_q = db.query(Signal).filter(Signal.outcome_correct.isnot(None))
+    if epoch is not None:
+        total_q = total_q.filter(Signal.timestamp >= epoch)
+        settled_q = settled_q.filter(Signal.timestamp >= epoch)
+    total_signals = total_q.count()
+    settled_signals = settled_q.all()
 
     if not settled_signals:
         if total_signals == 0:
@@ -986,6 +1023,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         city_segments=city_segments,
         weather_signals=weather_signals_data,
         weather_forecasts=weather_forecasts_data,
+        scoreboard_epoch=(settings.SCOREBOARD_EPOCH or None),
     )
 
 

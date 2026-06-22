@@ -127,4 +127,5 @@ export interface DashboardData {
   city_segments?: BiasSegment[]   // active (still traded) vs retired cities
   weather_signals: WeatherSignal[]
   weather_forecasts: WeatherForecast[]
+  scoreboard_epoch?: string | null   // UTC ISO cutoff the scoreboard is scored from
 }
