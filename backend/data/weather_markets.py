@@ -88,6 +88,10 @@ class WeatherMarket:
     # top-of-book ask. The NO side has its own book, so we keep both ids.
     token_id_yes: Optional[str] = None
     token_id_no: Optional[str] = None
+    # On-chain condition id for the market (Gamma ``conditionId``). The Polymarket Data API
+    # ``/trades`` filters by this, so the maker/limit-order execution layer needs it to read the
+    # real trade flow that fills a resting order. Additive/optional; unused by the taker path.
+    condition_id: Optional[str] = None
     closed: bool = False
     # Market-implied mean for the whole EVENT this bucket belongs to (probability-
     # weighted center of all the event's bucket prices, in native unit). Filled in
@@ -323,6 +327,7 @@ def _parse_bucket_market(
         best_ask=_to_float(market_data.get("bestAsk"), None) if yi == 0 else None,
         token_id_yes=token_id_yes,
         token_id_no=token_id_no,
+        condition_id=(str(market_data.get("conditionId")) if market_data.get("conditionId") else None),
     )
 
 
