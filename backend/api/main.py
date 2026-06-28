@@ -318,30 +318,35 @@ async def health():
 
 @app.get("/api/stats", response_model=BotStats)
 async def get_stats(db: Session = Depends(get_db)):
-    from sqlalchemy import func
-
     state = db.query(BotState).first()
     if not state:
         raise HTTPException(status_code=404, detail="Bot state not initialized")
 
-    # Win rate is over RESOLVED trades only — dividing by total_trades (which
-    # includes still-open positions) understates it while trades are pending.
-    settled_trades = db.query(Trade).filter(Trade.settled == True).count()
-    win_rate = state.winning_trades / settled_trades if settled_trades > 0 else 0
+    # ACTIVE-CITY scorecard: bankroll / total P&L / win-rate reflect ONLY the cities we still
+    # trade (WEATHER_CITIES). Parked-city trades stay in the DB and DID move the real account, but
+    # the DISPLAYED figures exclude them so the whole dashboard reads as one clean active-city
+    # record (matching the scoreboard/cohort tables, which are already active-only). The bot still
+    # SIZES off the real account, so the allocation / daily-loss CAPS below stay relative to the
+    # true capital (state.bankroll). Bankroll = starting capital + active-city realized P&L.
+    settled = [t for t in db.query(Trade).filter(Trade.settled == True).all()
+               if _is_active_weather(t.event_slug)]
+    settled_trades = len(settled)
+    winning_trades = sum(1 for t in settled if t.result == "win")
+    win_rate = (winning_trades / settled_trades) if settled_trades else 0
+    active_pnl = sum(t.pnl for t in settled if t.pnl is not None)
+    display_bankroll = settings.INITIAL_BANKROLL + active_pnl
 
-    # Today's realized P&L (UTC day) — same window the circuit breaker uses.
+    # Today's realized P&L (active cities, UTC day) — same window the breaker uses.
     today_start = datetime.utcnow().replace(hour=0, minute=0, second=0, microsecond=0)
-    daily_pnl = db.query(func.coalesce(func.sum(Trade.pnl), 0.0)).filter(
-        Trade.settled == True,
-        Trade.settlement_time >= today_start,
-    ).scalar() or 0.0
+    daily_pnl = sum(t.pnl for t in settled
+                    if t.pnl is not None and t.settlement_time and t.settlement_time >= today_start)
 
     return BotStats(
-        bankroll=state.bankroll,
+        bankroll=round(display_bankroll, 2),
         total_trades=state.total_trades,
-        winning_trades=state.winning_trades,
+        winning_trades=winning_trades,
         win_rate=win_rate,
-        total_pnl=state.total_pnl,
+        total_pnl=round(active_pnl, 2),
         is_running=state.is_running,
         last_run=state.last_run,
         settled_trades=settled_trades,
