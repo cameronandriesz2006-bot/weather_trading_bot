@@ -63,3 +63,6 @@ htmlcov/
 .pytest_cache/
 *.pem
 backend/data/backtest_cache/
+
+# Calibration cache (regenerable via backend.data.calibration_cache)
+backend/data/calibration_cache.json
