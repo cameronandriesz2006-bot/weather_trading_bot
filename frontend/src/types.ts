@@ -118,13 +118,32 @@ export interface EventLogEntry {
   data?: Record<string, unknown>
 }
 
+export interface WorkingOrder {
+  order_id: string
+  city_name?: string | null
+  metric?: string | null
+  bucket_label?: string | null
+  target_date?: string | null
+  direction: string                 // side we're buying: "yes" / "no"
+  limit_price: number
+  size_shares: number
+  intended_cash: number
+  status: string                    // OPEN / PARTIALLY_FILLED / FILLED / EXPIRED / CANCELLED
+  filled_shares: number
+  avg_fill_price?: number | null
+  fill_pct: number                  // filled / requested (0-1)
+  created_at?: string | null
+  expires_in_seconds?: number | null
+}
+
 export interface DashboardData {
   stats: BotStats
   recent_trades: Trade[]
   equity_curve: EquityPoint[]
   calibration: CalibrationSummary | null
   bias_segments?: BiasSegment[]
-  city_segments?: BiasSegment[]   // active (still traded) vs retired cities
+  city_segments?: BiasSegment[]   // active (still traded) vs retired cities (no longer rendered)
+  working_orders?: WorkingOrder[]   // resting maker limit orders
   weather_signals: WeatherSignal[]
   weather_forecasts: WeatherForecast[]
   scoreboard_epoch?: string | null   // UTC ISO cutoff the scoreboard is scored from

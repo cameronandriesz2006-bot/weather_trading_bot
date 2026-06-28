@@ -13,7 +13,7 @@ import httpx
 from backend.config import settings
 from backend.models.database import (
     get_db, init_db, SessionLocal,
-    Signal, Trade, BotState,
+    Signal, Trade, BotState, WorkingOrder,
 )
 
 from pydantic import BaseModel
@@ -201,6 +201,26 @@ class WeatherSignalResponse(BaseModel):
     bias: float = 0.0                   # per-station bias applied (subtracted from mean)
 
 
+class WorkingOrderResponse(BaseModel):
+    """A resting MAKER limit order (backend/core/maker.py) for the dashboard's open-orders panel.
+    These are posted-but-not-yet-(fully)-filled orders; they become Trades only as they fill."""
+    order_id: str
+    city_name: Optional[str] = None
+    metric: Optional[str] = None
+    bucket_label: Optional[str] = None
+    target_date: Optional[str] = None
+    direction: str                       # side we're buying: "yes" / "no"
+    limit_price: float
+    size_shares: float
+    intended_cash: float
+    status: str                          # OPEN / PARTIALLY_FILLED / FILLED / EXPIRED / CANCELLED
+    filled_shares: float = 0.0
+    avg_fill_price: Optional[float] = None
+    fill_pct: float = 0.0                # filled / requested (0-1)
+    created_at: Optional[datetime] = None
+    expires_in_seconds: Optional[int] = None   # time left before GTD auto-cancel (None if terminal)
+
+
 class DashboardData(BaseModel):
     stats: BotStats
     recent_trades: List[TradeResponse]
@@ -208,6 +228,7 @@ class DashboardData(BaseModel):
     calibration: Optional[CalibrationSummary] = None
     bias_segments: List[BiasSegment] = []
     city_segments: List[BiasSegment] = []   # active (still traded) vs retired cities
+    working_orders: List[WorkingOrderResponse] = []   # resting maker limit orders
     weather_signals: List[WeatherSignalResponse] = []
     weather_forecasts: List[WeatherForecastResponse] = []
     # UTC ISO cutoff the scoreboard is scored from (config.SCOREBOARD_EPOCH); None =
@@ -422,6 +443,15 @@ def _active_city_keys() -> set:
     return {c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()}
 
 
+def _is_active_weather(event_slug: Optional[str]) -> bool:
+    """True if this trade's city is still actively traded (in WEATHER_CITIES). Parked cities
+    (LA/Shanghai/Miami/London/Seoul) are HIDDEN from the dashboard's trade/scoreboard views but
+    kept in the DB — the dashboard shows only the cities we currently trade."""
+    from backend.data.weather_markets import parse_event_slug
+    parsed = parse_event_slug(event_slug or "")
+    return bool(parsed and parsed[0] in _active_city_keys())
+
+
 def _scoreboard_epoch() -> Optional[datetime]:
     """Visual-reset cutoff for the scoreboard (config.SCOREBOARD_EPOCH). The scoreboard
     aggregates (calibration + cohort tables) count only trades/signals entered at/after
@@ -474,7 +504,8 @@ def _compute_bias_segments(db: Session) -> List[BiasSegment]:
         q = db.query(Trade).filter(Trade.bias_corrected == flag)
         if epoch is not None:
             q = q.filter(Trade.timestamp >= epoch)
-        return q.all()
+        # active cities only — parked cities are hidden from the scoreboard (kept in DB)
+        return [t for t in q.all() if _is_active_weather(t.event_slug)]
 
     return [_segment_from_trades(label, cohort(flag))
             for label, flag in (("corrected", True), ("uncorrected", False))]
@@ -512,6 +543,14 @@ def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
         settled_q = settled_q.filter(Signal.timestamp >= epoch)
     total_signals = total_q.count()
     settled_signals = settled_q.all()
+
+    # Active-city only: map each executed signal's market_ticker -> its city via the trades table
+    # (executed signals have a trade) and drop parked-city ones, so the headline Brier/accuracy
+    # reflect only the cities we currently trade. Unmapped tickers default kept (harmless — those
+    # are non-executed signals that don't reach 'settled' anyway).
+    ticker_active = {tk: _is_active_weather(slug)
+                     for tk, slug in db.query(Trade.market_ticker, Trade.event_slug).all()}
+    settled_signals = [s for s in settled_signals if ticker_active.get(s.market_ticker, True)]
 
     if not settled_signals:
         if total_signals == 0:
@@ -762,6 +801,25 @@ def _trade_to_response(t, current_price: Optional[float] = None) -> TradeRespons
     )
 
 
+def _working_order_to_response(w, now_ts: float) -> "WorkingOrderResponse":
+    """Serialize a resting maker order for the dashboard's open-orders panel."""
+    from backend.data.weather import CITY_CONFIG
+    size = w.size_shares or 0.0
+    expires = None
+    if w.status in ("OPEN", "PARTIALLY_FILLED") and w.expiration_ts:
+        expires = max(0, int(w.expiration_ts - now_ts))
+    return WorkingOrderResponse(
+        order_id=w.order_id,
+        city_name=CITY_CONFIG.get(w.city_key, {}).get("name", w.city_key),
+        metric=w.metric, bucket_label=w.bucket_label, target_date=w.target_date,
+        direction=w.direction, limit_price=w.limit_price, size_shares=size,
+        intended_cash=w.intended_cash or 0.0, status=w.status,
+        filled_shares=w.filled_shares or 0.0, avg_fill_price=w.avg_fill_price,
+        fill_pct=((w.filled_shares or 0.0) / size) if size > 0 else 0.0,
+        created_at=w.created_at, expires_in_seconds=expires,
+    )
+
+
 # --- Mark-to-market price lookup (cached) ---------------------------------
 _mtm_cache: dict = {}   # market_id -> (ts, (yes_price, no_price))
 _MTM_TTL = 30.0
@@ -954,10 +1012,29 @@ async def get_dashboard(db: Session = Depends(get_db)):
     """Get all dashboard data in one call."""
     stats = await get_stats(db)
 
-    # Recent trades (with mark-to-market prices for open positions)
-    trades = db.query(Trade).order_by(Trade.timestamp.desc()).limit(50).all()
+    # Recent trades — ACTIVE cities only (parked cities stay in the DB but are hidden here);
+    # with mark-to-market prices for open positions.
+    trades_all = db.query(Trade).order_by(Trade.timestamp.desc()).limit(200).all()
+    trades = [t for t in trades_all if _is_active_weather(t.event_slug)][:50]
     side_prices = await _current_side_prices(trades)
     recent_trades = [_trade_to_response(t, current_price=side_prices.get(t.id)) for t in trades]
+
+    # Resting maker orders (active cities; open ones + recently-terminal so fills/expiries show
+    # briefly). These are posted-but-not-yet-filled limit orders, distinct from filled positions.
+    import time as _time_mod
+    now_ts = _time_mod.time()
+    active_cities = _active_city_keys()
+    recent_cutoff = datetime.utcnow() - timedelta(hours=12)
+    working_orders = []
+    for w in db.query(WorkingOrder).order_by(WorkingOrder.created_at.desc()).limit(120).all():
+        if w.city_key not in active_cities:
+            continue
+        is_open = w.status in ("OPEN", "PARTIALLY_FILLED")
+        recent_terminal = w.created_at is not None and w.created_at >= recent_cutoff
+        if is_open or recent_terminal:
+            working_orders.append(_working_order_to_response(w, now_ts))
+        if len(working_orders) >= 40:
+            break
 
     # Equity curve
     equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
@@ -1021,6 +1098,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         calibration=calibration,
         bias_segments=bias_segments,
         city_segments=city_segments,
+        working_orders=working_orders,
         weather_signals=weather_signals_data,
         weather_forecasts=weather_forecasts_data,
         scoreboard_epoch=(settings.SCOREBOARD_EPOCH or None),

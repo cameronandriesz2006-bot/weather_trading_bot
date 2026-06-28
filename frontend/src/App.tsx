@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchDashboard, runScan, startBot, stopBot } from './api'
 import { ScanView } from './components/ScanView'
 import { TradesPanel } from './components/TradesPanel'
+import { WorkingOrders } from './components/WorkingOrders'
 import { Scoreboard } from './components/Scoreboard'
 import { LiveLog } from './components/LiveLog'
 
@@ -50,7 +51,7 @@ function App() {
   const recentTrades = data?.recent_trades ?? []
   const calibration = data?.calibration ?? null
   const biasSegments = data?.bias_segments ?? []
-  const citySegments = data?.city_segments ?? []
+  const workingOrders = data?.working_orders ?? []
   const scoreboardEpoch = data?.scoreboard_epoch ?? null
   const stats = data?.stats ?? {
     is_running: false, last_run: null, total_trades: 0, total_pnl: 0,
@@ -164,8 +165,11 @@ function App() {
           </div>
         </section>
 
+        {/* ===== Resting maker orders ===== */}
+        <WorkingOrders orders={workingOrders} />
+
         {/* ===== Scoreboard & calibration ===== */}
-        <Scoreboard calibration={calibration} biasSegments={biasSegments} citySegments={citySegments} epoch={scoreboardEpoch} />
+        <Scoreboard calibration={calibration} biasSegments={biasSegments} epoch={scoreboardEpoch} />
 
         {/* ===== Live event log (collapsible) ===== */}
         <LiveLog />
