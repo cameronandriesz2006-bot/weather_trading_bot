@@ -66,7 +66,14 @@ function App() {
   const breakerHit = dailyLossUsed >= dailyLossLimit
 
   const openTrades = recentTrades.filter(t => !t.settled)
-  const openExposure = openTrades.reduce((a, t) => a + (t.size || 0), 0)
+  // Committed weather allocation = open positions' cash PLUS resting day-ahead maker orders'
+  // cash. The bot's allocation cap counts BOTH (_committed_and_counts), so the dashboard must
+  // too — otherwise it understates how full the allocation is (e.g. shows ~half-full while the
+  // bot is actually capped out and placing nothing new).
+  const restingCash = workingOrders
+    .filter(o => o.status === 'OPEN' || o.status === 'PARTIALLY_FILLED')
+    .reduce((a, o) => a + (o.intended_cash || 0), 0)
+  const openExposure = openTrades.reduce((a, t) => a + (t.size || 0), 0) + restingCash
   // Map of market_id -> open position, so the scan view can mark buckets we hold.
   const heldByMarket = openTrades.reduce((m, t) => {
     m[t.market_ticker] = { direction: t.direction, entry_price: t.entry_price }
@@ -142,7 +149,7 @@ function App() {
           <StatCard label="Bankroll" value={`$${stats.bankroll.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
           <StatCard label="Total P&L" value={`${stats.total_pnl >= 0 ? '+' : ''}$${stats.total_pnl.toFixed(0)}`} tone={stats.total_pnl >= 0 ? 'pos' : 'neg'} />
           <StatCard label="Win rate" value={`${winRatePct.toFixed(0)}%`} sub={`${stats.winning_trades}/${stats.settled_trades ?? 0} settled`} />
-          <StatCard label="Open positions" value={`${openTrades.length}`} sub={`$${openExposure.toFixed(0)} / $${allocationCap.toLocaleString(undefined, { maximumFractionDigits: 0 })} cap`} />
+          <StatCard label="Open positions" value={`${openTrades.length}`} sub={`$${openExposure.toFixed(0)} / $${allocationCap.toLocaleString(undefined, { maximumFractionDigits: 0 })} cap${restingCash > 0 ? ` · incl $${restingCash.toFixed(0)} resting` : ''}`} />
           <StatCard
             label="Daily loss"
             value={`$${dailyLossUsed.toFixed(0)} / $${dailyLossLimit.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}

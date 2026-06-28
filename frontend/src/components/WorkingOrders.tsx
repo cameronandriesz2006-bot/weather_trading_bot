@@ -15,8 +15,9 @@ function fmtExpiry(sec?: number | null): string {
   return h > 0 ? `${h}h ${m}m` : `${m}m`
 }
 
-/** Resting MAKER limit orders: posted-but-not-yet-(fully)-filled. Distinct from filled positions
- *  (which show in Positions & trades). A filled order becomes a position; an unfilled one expires. */
+/** Resting MAKER limit orders for DAY-AHEAD markets (same-day edges are taken at the ask, not rested):
+ *  posted-but-not-yet-(fully)-filled. Distinct from filled positions (which show in Positions & trades).
+ *  A filled order becomes a position; an unfilled one expires. */
 export function WorkingOrders({ orders }: { orders: WorkingOrder[] }) {
   const open = orders.filter((o) => o.status === 'OPEN' || o.status === 'PARTIALLY_FILLED')
   const openCash = open.reduce((a, o) => a + (o.intended_cash || 0), 0)
@@ -24,7 +25,7 @@ export function WorkingOrders({ orders }: { orders: WorkingOrder[] }) {
   return (
     <section>
       <h2 className="text-xs font-semibold uppercase tracking-wider text-neutral-400 mb-2">
-        Resting orders (maker)
+        Resting orders (day-ahead maker)
         {open.length > 0 && (
           <span className="ml-2 text-neutral-500 normal-case font-normal tracking-normal">
             {open.length} open · ${openCash.toFixed(0)} posted
@@ -34,9 +35,10 @@ export function WorkingOrders({ orders }: { orders: WorkingOrder[] }) {
       <div className="rounded-xl border border-neutral-800 bg-neutral-900/40 overflow-hidden">
         {orders.length === 0 ? (
           <div className="p-5 text-sm text-neutral-400 leading-relaxed">
-            No resting orders right now. When the bot finds an edge it posts a limit order here and
-            waits for the day&apos;s flow to fill it — earning the spread instead of paying it. Filled
-            orders become positions above; unfilled ones auto-expire.
+            No resting orders right now. Day-ahead markets are too thin to take, so the bot rests a
+            limit order here and lets the day&apos;s flow fill it — earning the spread instead of
+            paying it. (Same-day edges are taken at the ask immediately, not rested.) Filled orders
+            become positions above; unfilled ones auto-expire.
           </div>
         ) : (
           <table className="w-full text-sm tabular-nums">
