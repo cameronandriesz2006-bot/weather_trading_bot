@@ -69,6 +69,24 @@ async def weather_scan_and_trade_job():
             "actionable": len(actionable),
         })
 
+        # --- MAKER path (gated). Instead of taking at the ask, POST resting limit orders
+        # and let the day's flow fill them (the day-ahead edge is maker-only). The poll job
+        # (maker_poll_job) advances fills + expiries and writes Trades. When the flag is off
+        # this whole branch is skipped and the taker path below runs unchanged. ---
+        if settings.WEATHER_MAKER_ENABLED:
+            from backend.core.maker import place_maker_orders
+            db = SessionLocal()
+            try:
+                posted = await place_maker_orders(db, signals)
+                log_event("success" if posted else "info",
+                          f"Maker: posted {posted} resting order(s)")
+            except Exception as e:
+                log_event("error", f"Maker place error: {str(e)}")
+                logger.exception("Error placing maker orders")
+            finally:
+                db.close()
+            return
+
         if not actionable:
             log_event("info", "No actionable weather signals")
             return
@@ -256,6 +274,24 @@ async def weather_scan_and_trade_job():
         logger.exception("Error in weather_scan_and_trade_job")
 
 
+async def maker_poll_job():
+    """Advance resting maker orders against the live trade tape: fill what the flow hits, expire
+    the stale, and write a Trade for whatever filled. Only scheduled when WEATHER_MAKER_ENABLED;
+    runs on the (fast) maker poll cadence so day-ahead orders fill promptly as flow arrives."""
+    try:
+        from backend.core.maker import poll_maker_orders
+        db = SessionLocal()
+        try:
+            filled = await poll_maker_orders(db)
+            if filled:
+                log_event("success", f"Maker: {filled} resting order(s) filled")
+        finally:
+            db.close()
+    except Exception as e:
+        log_event("error", f"Maker poll error: {str(e)}")
+        logger.exception("Error in maker_poll_job")
+
+
 async def settlement_job():
     """
     Background job: Check and settle pending trades.
@@ -371,6 +407,17 @@ def start_scheduler():
             replace_existing=True,
             max_instances=1,
         )
+
+        # Maker poll job: advance/fill/expire resting limit orders on a fast cadence.
+        # Only when the maker path is enabled (otherwise there are no working orders).
+        if settings.WEATHER_MAKER_ENABLED:
+            scheduler.add_job(
+                maker_poll_job,
+                IntervalTrigger(seconds=settings.WEATHER_MAKER_POLL_SECONDS),
+                id="maker_poll",
+                replace_existing=True,
+                max_instances=1,
+            )
 
     scheduler.start()
     log_event("success", "Weather trading scheduler started", {

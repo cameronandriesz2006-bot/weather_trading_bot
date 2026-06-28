@@ -73,7 +73,14 @@ class Settings(BaseSettings):
     # Phase-7 run (Shanghai −$534, LA −$312). They stay in CITY_CONFIG so any open
     # positions still settle and their scoreboard history is preserved (shown as
     # "retired" in the dashboard's active-vs-retired city panel — nothing deleted).
-    WEATHER_CITIES: str = "nyc,chicago,miami,denver,london,tokyo,seoul,paris,hong_kong"
+    # NOTE (2026-06-28): miami + london + seoul PARKED too. The full-history calibration
+    # (offline, ~545 resolved markets, 3 independent reconstructions) showed they consistently
+    # TRAIL the market's Brier (london +0.049 / miami +0.046), and seoul is the worst city AND
+    # the only one with NO bias correction. Kept = Chicago/NYC (beat the market) + Denver/HK/
+    # Tokyo/Paris (parity; Paris +0.017 is borderline-parity, kept on watch). Same mechanism as
+    # above: PARKED not deleted — they stay in CITY_CONFIG so positions settle + history is
+    # preserved, and it's reversible. The maker wiring (next) trades exactly these 6.
+    WEATHER_CITIES: str = "nyc,chicago,denver,tokyo,paris,hong_kong"
 
     # Trading costs (Phase 6) — "profit" must mean profit net of costs.
     # On Polymarket the dominant cost is the bid/ask spread (the live market
@@ -117,6 +124,25 @@ class Settings(BaseSettings):
     # position per city/day, forcing diversification across >=3 cities to use the full
     # allocation); tune to your risk appetite.
     WEATHER_MAX_CITY_DAY_FRACTION: float = 0.07     # <= 7% of bankroll on one city+day (~$700 @ $10k)
+
+    # --- Maker / limit-order execution (Phase 8, 2026-06-28) ---------------------
+    # The day-ahead edge (Chicago/NYC, the previous day) lives in books too THIN to take at
+    # size as a taker — but ~$1k/bucket of flow crosses over the day. So the bot can POST a
+    # resting limit order near fair value and let flow fill it (earning the spread instead of
+    # paying it). This is the MAKER path; it uses backend/core/execution.py — simulated now
+    # against the REAL live tape, swappable to py-clob-client to go live (SIMULATION_MODE gate).
+    # GATED OFF by default: when False the scan uses the existing TAKER path BYTE-IDENTICALLY.
+    # ENABLED 2026-06-28 (simulated — SIMULATION_MODE still True, so these are sim orders against
+    # the real tape, no real money). Flip back to False to instantly revert to the taker path.
+    WEATHER_MAKER_ENABLED: bool = True
+    # How long a posted order rests before auto-cancel (GTD; Polymarket adds a 1-min security
+    # threshold on top). Day-ahead orders rest for HOURS to catch the day's flow.
+    WEATHER_MAKER_TTL_SECONDS: int = 21600     # 6h
+    # Poll cadence for advancing fills (against the real trade tape) and expiring orders.
+    WEATHER_MAKER_POLL_SECONDS: int = 120
+    # Tick used to improve the bid by one step when posting (Polymarket rounds to a valid tick
+    # on submit; 0.01 is the common weather-market tick).
+    WEATHER_MAKER_TICK: float = 0.01
 
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the

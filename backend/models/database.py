@@ -111,6 +111,55 @@ class Signal(Base):
     settled_at = Column(DateTime, nullable=True)        # when we recorded the outcome
 
 
+class WorkingOrder(Base):
+    """A resting LIMIT order placed by the MAKER path (backend/core/maker.py), persisted so it
+    survives across poll cycles and restarts. A working order is NOT yet a position — it becomes
+    a ``Trade`` only when (and for the amount) it actually fills. Unfilled orders expire (GTD) and
+    leave no Trade. This keeps the Trade table's meaning intact (a Trade = a filled position).
+
+    The simulator's resting state (queue_ahead, last_poll_ts, filled so far) lives here so each
+    poll reconstructs the order, advances it against the real trade tape, and writes it back.
+    """
+    __tablename__ = "working_orders"
+
+    id = Column(Integer, primary_key=True, index=True)
+    order_id = Column(String, unique=True, index=True)
+    # market / event context (also used to build the Trade on fill)
+    market_ticker = Column(String, index=True)
+    event_slug = Column(String, nullable=True)
+    bucket_label = Column(String, nullable=True)
+    city_key = Column(String, nullable=True)
+    metric = Column(String, nullable=True)
+    target_date = Column(String, nullable=True)   # ISO date
+    token_id = Column(String, nullable=True)      # the outcome token we post the BUY on
+    condition_id = Column(String, nullable=True)  # for the Data API /trades fill feed
+    direction = Column(String)                    # side we BUY: "yes" or "no"
+
+    # order terms
+    limit_price = Column(Float)
+    size_shares = Column(Float)                    # requested shares
+    intended_cash = Column(Float)                 # cash budget (shares * limit_price)
+    tif = Column(String, default="GTD")
+    created_ts = Column(Float)
+    expiration_ts = Column(Float, nullable=True)
+
+    # lifecycle / simulator state
+    status = Column(String, default="OPEN", index=True)  # OPEN/PARTIALLY_FILLED/FILLED/EXPIRED/CANCELLED/REJECTED
+    filled_shares = Column(Float, default=0.0)
+    avg_fill_price = Column(Float, nullable=True)
+    queue_ahead = Column(Float, default=0.0)
+    last_poll_ts = Column(Float)
+
+    # context for the Trade created on fill
+    model_probability = Column(Float, nullable=True)
+    market_price_at_entry = Column(Float, nullable=True)
+    edge_at_entry = Column(Float, nullable=True)
+    bias_corrected = Column(Boolean, nullable=True)
+    signal_id = Column(Integer, nullable=True)
+    trade_id = Column(Integer, nullable=True)     # the Trade row created when it filled
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
 def init_db():
     """Initialize database tables."""
     Base.metadata.create_all(bind=engine)
