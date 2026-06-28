@@ -69,23 +69,40 @@ async def weather_scan_and_trade_job():
             "actionable": len(actionable),
         })
 
-        # --- MAKER path (gated). Instead of taking at the ask, POST resting limit orders
-        # and let the day's flow fill them (the day-ahead edge is maker-only). The poll job
-        # (maker_poll_job) advances fills + expiries and writes Trades. When the flag is off
-        # this whole branch is skipped and the taker path below runs unchanged. ---
+        # --- HYBRID execution (gated by WEATHER_MAKER_ENABLED). Route by lead time:
+        #   * DAY-AHEAD markets -> POST resting limit orders (maker). Their books are thin
+        #     instantaneously but ~$1k/bucket flows over the day, and 24h+ out the outcome is
+        #     genuinely unresolved, so adverse selection on a resting order is mild. This is
+        #     the only place the day-ahead edge is capturable.
+        #   * SAME-DAY markets -> TAKE at the ask (the taker path below). Books are deep, fills
+        #     are immediate, AND a resting order same-day suffers the WORST adverse selection
+        #     (it fills right as the result resolves), so we never rest there.
+        # The maker poll job (maker_poll_job) advances fills/expiries and writes Trades for the
+        # day-ahead orders. When the flag is OFF this whole block is skipped and EVERYTHING goes
+        # taker, unchanged. (Day-ahead-only posting also means the 6h TTL can't rest into
+        # settlement — a day-ahead order expires the night before the day's extreme forms.) ---
         if settings.WEATHER_MAKER_ENABLED:
             from backend.core.maker import place_maker_orders
+            from backend.data.weather import is_day_ahead
+            dayahead_signals = [s for s in signals
+                                if is_day_ahead(s.market.city_key, s.market.target_date)]
+            sameday_actionable = [s for s in actionable
+                                  if not is_day_ahead(s.market.city_key, s.market.target_date)]
+            log_event("info",
+                      f"Hybrid: {sum(1 for s in dayahead_signals if s.passes_threshold)} "
+                      f"day-ahead->maker, {len(sameday_actionable)} same-day->taker")
             db = SessionLocal()
             try:
-                posted = await place_maker_orders(db, signals)
+                posted = await place_maker_orders(db, dayahead_signals)
                 log_event("success" if posted else "info",
-                          f"Maker: posted {posted} resting order(s)")
+                          f"Maker: posted {posted} resting day-ahead order(s)")
             except Exception as e:
                 log_event("error", f"Maker place error: {str(e)}")
                 logger.exception("Error placing maker orders")
             finally:
                 db.close()
-            return
+            # Fall through to the taker path for the SAME-DAY actionable signals only.
+            actionable = sameday_actionable
 
         if not actionable:
             log_event("info", "No actionable weather signals")
@@ -110,10 +127,14 @@ async def weather_scan_and_trade_job():
 
             # Track remaining room under the allocation cap; we enforce it per
             # trade below so total open exposure never overshoots the cap.
-            weather_pending = db.query(func.coalesce(func.sum(Trade.size), 0.0)).filter(
-                Trade.settled == False,
-                Trade.market_type == "weather",
-            ).scalar()
+            # Shared exposure accounting with the maker path: count BOTH open Trades' cash
+            # AND resting WorkingOrders' intended cash (and per-(city,day) exposure + open
+            # count), so same-day taker trades and day-ahead resting maker orders JOINTLY
+            # respect the allocation / city-day / open-count caps. Without this the taker is
+            # blind to resting orders and the two paths over-commit the bankroll together.
+            # With no resting orders (pure-taker mode) this equals the old Trades-only sum.
+            from backend.core.maker import _committed_and_counts
+            weather_pending, open_count, city_day_exposure = _committed_and_counts(db)
             remaining_allocation = max_allocation - weather_pending
 
             if remaining_allocation < min_trade_size:
@@ -138,19 +159,8 @@ async def weather_scan_and_trade_job():
             # how much OPEN stake can ride on any single city+day; also enforce the
             # global cap on the number of open positions.
             max_city_day = settings.WEATHER_MAX_CITY_DAY_FRACTION * state.bankroll
-            open_weather = db.query(Trade).filter(
-                Trade.settled == False,
-                Trade.market_type == "weather",
-            ).all()
-            open_count = len(open_weather)
-            from collections import defaultdict
-            from backend.data.weather_markets import parse_event_slug
-            city_day_exposure = defaultdict(float)
-            for t in open_weather:
-                parsed = parse_event_slug(t.event_slug or "")
-                if parsed:
-                    ck, _m, td = parsed
-                    city_day_exposure[(ck, td)] += float(t.size or 0.0)
+            # open_count + city_day_exposure were computed above via _committed_and_counts
+            # (they already include resting day-ahead maker orders).
 
             trades_executed = 0
             # Iterate ALL actionable signals (sorted by edge), skipping markets we

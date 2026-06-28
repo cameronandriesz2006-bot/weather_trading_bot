@@ -848,6 +848,19 @@ def station_local_hour(city_key: str, target_date: date) -> Optional[int]:
     return now.hour if target_date == now.date() else None
 
 
+def is_day_ahead(city_key: str, target_date: date) -> bool:
+    """True if ``target_date`` is a FUTURE local day at the station (day-ahead or later) —
+    i.e. the day's high/low has not begun forming yet. Same-day / in-progress (or any past
+    date) returns False.
+
+    Used to route execution: day-ahead markets have thin instantaneous books and a genuinely
+    unresolved outcome, so we REST limit orders there (maker); same-day markets have deep
+    books and a resting order would suffer the worst adverse selection (it fills just as the
+    result resolves), so we TAKE those at the ask. Uses the same station-local clock as the
+    observed-floor / intraday-σ logic so all three agree on when 'today' is."""
+    return target_date > station_local_now(city_key).date()
+
+
 async def fetch_observed_extreme(
     city_key: str, metric: str, target_date: Optional[date] = None
 ) -> Optional[float]:

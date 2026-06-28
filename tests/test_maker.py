@@ -140,7 +140,23 @@ async def test_expiry_leaves_no_trade():
     print("PASS expiry_leaves_no_trade")
 
 
+def test_is_day_ahead_routing():
+    """Lead-time classifier that routes hybrid execution: a FUTURE local day -> day-ahead
+    (maker); today / in-progress / past -> same-day (taker). Checked across several stations
+    so the per-city local clock (not a single UTC day) is what's used."""
+    from datetime import timedelta
+    from backend.data.weather import is_day_ahead, station_local_now
+    for c in ("nyc", "chicago", "denver", "tokyo", "paris", "hong_kong"):
+        today = station_local_now(c).date()
+        assert is_day_ahead(c, today + timedelta(days=1)) is True, f"{c}: tomorrow must be day-ahead"
+        assert is_day_ahead(c, today + timedelta(days=2)) is True, f"{c}: +2d must be day-ahead"
+        assert is_day_ahead(c, today) is False, f"{c}: today must be same-day (taker)"
+        assert is_day_ahead(c, today - timedelta(days=1)) is False, f"{c}: past must not be day-ahead"
+    print("PASS is_day_ahead_routing")
+
+
 async def _amain():
+    test_is_day_ahead_routing()
     test_maker_price_yes()
     test_maker_price_no_mirror()
     test_maker_price_skips_when_no_edge()
