@@ -88,7 +88,21 @@ can't happen. See the "Pre-production audit + fixes" session note below.
 
 Re-run the scoreboard after every change. One change at a time, always keep it running.
 
-## Current state (2026-06-21)
+## Current state (2026-06-28)
+
+**As of 2026-06-28 (this session):** the **GFS+ECMWF+ICON blend is LIVE** (deployed 2026-06-22,
+σ-inflation 2.04) and the scoreboard was **hard-reset to a clean $10k** that day (old book archived).
+Active set is **6 cities** (`nyc, chicago, denver, tokyo, paris, hong_kong`) — the backtest's
+edge/parity set; the laggards (london/miami/seoul) and structurally-broken stations (LA/shanghai) are
+parked. Execution is now **HYBRID**: day-ahead markets → **maker** (rest limit orders, thin books),
+same-day → **taker** (deep books, no adverse-selection trap). We're in **Phase 7 run-and-evaluate**
+with a defined plan: **judge on Brier, not P&L**; **~1-week fill-rate gate → ~3-week directional read →
+~6–8-week (≈300–400 trades) conclusion**, all inside the summer regime the backtest is calibrated to.
+The backtest method was code-audited this session and is sound + conservative (see Session 2026-06-28).
+Detail in the auto-memories (`maker-live-status-open-questions`, `forecast-skill-diagnosis-multimodel`,
+`calibration-backfill-vs-market`).
+
+### Historical snapshot (2026-06-21)
 
 Phases 1–7 (model-correctness + cost) done; in **Phase 7 (run-and-evaluate)**, bot live 24/7 on
 the server (systemd `weatherbot.service`, port 8000; this machine IS the runner). **The
@@ -104,6 +118,54 @@ active-vs-retired dashboard filter (no data deleted). **Next, not yet built:** *
 first. **(c)** keep HK/Tokyo/Seoul and watch (small samples). The edge still has to come from the
 trading-side layers; a better forecast only closes the deficit toward the market. See "Session
 2026-06-21" below.
+
+### Session 2026-06-28 — HYBRID execution shipped; city-cut & backtest re-verified; run plan set
+Phase-7 run-and-evaluate. One feature shipped + several analytical conclusions (code committed/pushed).
+
+- **HYBRID maker/taker routing — SHIPPED (commit `6c27b20`).** Was all-maker when the flag was on
+  (posting even SAME-DAY — the market's sharp zone + worst adverse selection for a resting order). Now
+  routes BY LEAD TIME: **day-ahead → maker** (rest limit orders; thin books, ~$1k/bucket of flow,
+  outcome unresolved 24h+ out so adverse selection is mild), **same-day → taker** (deep books, instant
+  fill, never rests into settlement). New `is_day_ahead(city_key, target_date)` in `weather.py` (future
+  local day at the station, same clock as observed-floor/intraday-σ); `scheduler.py` splits signals and
+  runs BOTH paths (taker falls through, no early return); flag-OFF = all-taker, byte-identical. **Latent
+  bug fixed:** the taker now shares the maker's `_committed_and_counts`, so resting orders + same-day
+  trades JOINTLY respect the allocation/city-day/open-count caps (taker was blind to resting cash →
+  over-allocation). Day-ahead-only posting also makes the 6h GTD TTL safe (a day-ahead order expires the
+  night before the extreme forms → **settlement-aware TTL deferred, not urgent**). Verified live:
+  `Hybrid: 9 day-ahead→maker, 6 same-day→taker`; `is_day_ahead` unit-tested across 6 stations; suite green.
+- **Dashboard reflects hybrid — SHIPPED (commit `985e758`).** Resting panel retitled "day-ahead maker"
+  + copy explains the split; the "Open positions" card exposure now COUNTS resting maker cash (matches
+  the bot's real allocation — it was understating, showing ~half-full while actually capped). Rebuilt
+  `frontend/dist`.
+- **Stale same-day resting orders removed (runtime).** Deleted the 2 pre-hybrid same-day resting orders
+  (nyc/chicago, 0 fills) the hybrid system wouldn't post; 3 day-ahead orders remain (Tokyo's is filling —
+  early positive fill-rate signal). Freed ~$477 allocation.
+- **City cut RE-VERIFIED — it HOLDS.** Computed per-city P&L with bootstrap CIs from the archive book:
+  the cut cities (london +$537, miami +$333) WERE the live profit leaders, but every CI spans $0 (miami's
+  "significance" = n=3 all-wins, an artifact). At n=3–16/city, P&L is pure VARIANCE — it can't rank
+  cities; only LA/shanghai losses are statistically real. The cut matches the faithful backtest reruns
+  almost exactly (keep chicago/nyc/denver/HK/tokyo; cut london/miami/seoul; paris the one marginal keep).
+  **Do NOT re-add london/miami on their P&L** — that's the variance trap in reverse. See
+  [[feedback-hold-backtest-conviction]].
+- **Backtest method AUDITED (`calibration_backfill.py`) — SOUND + conservative.** No lookahead (forecast
+  from archived feed; market = contemporaneous ~06:00-UTC prices-history, not settled; outcome only
+  scores); grading guarded (drops events without exactly one YES>0.9 winner); model vs market scored on
+  the SAME buckets. The one bias — model gets in-sample best-fit σ, live uses fixed 2.04 — FLATTERS the
+  model, so the parity-to-slightly-behind verdict is conservative and **cannot manufacture a fake edge
+  that bleeds**. Cross-validated 3 ways incl. its gap (~0.03) matching the live scoreboard gap (~0.031).
+- **RUN PLAN: judge on BRIER, not P&L.** P&L is too noisy to cleanly prove a small edge at this scale
+  (+$1.1k→−$95 at n≈55). At ~5–9 settled/day: **~1-week fill-rate gate** (does the maker fill —
+  kill-switch), **~3-week directional Brier read**, **~6–8 weeks / ~300–400 trades = real conclusion**,
+  all inside summer (matches the backtest regime; past ~10 weeks autumn confounds). Watch the
+  model-vs-market GAP per city, NOT absolute Brier (different denominators: traded vs all buckets). Don't
+  change anything between checkpoints (each change resets the clock).
+- **Decisions (no code):** sizing STAYS bankroll-relative (already compounds) — don't pin to $10k;
+  compounding only matters once the edge is proven and is capped by the ~$15–20k capacity ceiling.
+  **Kalshi is NOT a drop-in** — only 3 of 6 cities (US-only; no Tokyo/Paris/HK), different settlement
+  stations (NYC Central Park vs our LaGuardia; Denver KDEN vs our Buckley → re-point + re-bias), plus its
+  own market parser / order-book walker / fee model / RSA auth. A real build, deferred until the
+  Polymarket edge is proven.
 
 ### Session 2026-06-21 — Phase-7 diagnosis; coastal cut SHIPPED; blend evidence (offline); dist tracked
 Read the live scoreboard (58 settled), diagnosed why we don't beat the market, ran offline backtests,
