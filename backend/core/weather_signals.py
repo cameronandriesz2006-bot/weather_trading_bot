@@ -524,7 +524,20 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     # Pre-warm the forecast cache (one call per unique city/date). Without this,
     # the concurrent pass below would stampede Open-Meteo with one request per
     # bucket on a cold cache.
-    for city_key_, target_date_ in {(m.city_key, m.target_date) for m in markets}:
+    #
+    # The fetches are SPACED OUT (WEATHER_FORECAST_FETCH_SPACING_SECONDS) so the
+    # heavy 3-model blend requests don't fire all 6 cities back-to-back and trip
+    # Open-Meteo's per-minute rate limit (the cause of the ~66% 429 rate, 2026-06-29).
+    # Only real network fetches are spaced: a warm cache entry (cache_only probe
+    # returns non-None) is skipped instantly, so a fully-warm scan adds zero delay.
+    spacing = settings.WEATHER_FORECAST_FETCH_SPACING_SECONDS
+    did_fetch = False
+    for city_key_, target_date_ in sorted({(m.city_key, m.target_date) for m in markets}):
+        if await fetch_ensemble_forecast(city_key_, target_date_, cache_only=True) is not None:
+            continue  # already warm — no network call, no spacing needed
+        if did_fetch and spacing > 0:
+            await asyncio.sleep(spacing)
+        did_fetch = True
         try:
             await fetch_ensemble_forecast(city_key_, target_date_)
         except Exception:

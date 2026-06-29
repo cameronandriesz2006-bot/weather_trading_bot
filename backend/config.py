@@ -61,6 +61,12 @@ class Settings(BaseSettings):
     # the 90-min forecast cache (_CACHE_TTL in weather.py) absorbs repeated scans so this
     # mainly throttles the per-scan Meteostat/Polymarket/order-book calls.
     WEATHER_SETTLEMENT_INTERVAL_SECONDS: int = 1800  # 30 min
+    # Gap (seconds) inserted between consecutive COLD-cache forecast fetches in the
+    # per-scan pre-warm loop, so the heavy 3-model blend requests don't burst all 6
+    # cities back-to-back and trip Open-Meteo's per-minute rate limit (the cause of
+    # the ~66% 429 rate, 2026-06-29). Only applies to real network fetches — warm
+    # cache hits are skipped. ~12 cold combos x 2s = ~24s, trivial inside a 15-min scan.
+    WEATHER_FORECAST_FETCH_SPACING_SECONDS: float = 2.0
     WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% minimum edge to trade
     WEATHER_MAX_ENTRY_PRICE: float = 0.70
     # US markets resolve in °F; the international markets resolve in °C (handled
