@@ -1,774 +1,113 @@
 # CLAUDE.md — Weather Prediction-Market Bot
 
-Guidance for working in this repo. Read alongside `weather-bot-build-plan.md` (the
-authoritative, phase-by-phase plan). This file is the quick-reference summary.
+Quick-reference for working in this repo. Read alongside `weather-bot-build-plan.md`.
+**Session history before 2026-06-30 lives in `git log` and the auto-memories** — this file is
+kept short on purpose.
 
 ## What this project is
 
-A forked prediction-market bot that trades **daily high/low temperature markets** on
-**Kalshi** (`KXHIGH*` series) and **Polymarket** (Gamma API). It makes its *own*
-ensemble weather forecast (31-member GFS from Open-Meteo), converts that into a
-probability that a market's temperature threshold is met, compares to the market price,
-and bets when its probability differs from the market's by more than an edge threshold.
-Position sizing is fractional Kelly. A FastAPI backend runs the scan/settlement loop and
-serves a React dashboard.
+A prediction-market bot that trades **daily high/low temperature markets** on **Polymarket**
+(Gamma API) and, deferred, **Kalshi** (`KXHIGH*`). It makes its own ensemble weather forecast
+(GFS+ECMWF+ICON blend via Open-Meteo), converts it into a probability for each market's
+temperature bucket, compares to the live order-book price, and bets when the gap exceeds an edge
+threshold. Sizing is fractional Kelly. A FastAPI backend runs the scan/settlement loop and serves
+a React dashboard. **This machine is the always-on runner** (systemd `weatherbot.service`, port
+8000).
 
-## In plain English: what keeps the bot accurate (the safeguards)
+## Safeguards (what keeps a fake "edge" from being traded)
 
-The bot makes its own weather forecast, turns it into "the chance the temperature lands in
-each bucket," and bets when that differs from the market's price. The danger: if OUR forecast
-is wrong, we *think* the market is mispriced when really WE are — and we lose. Every safeguard
-below exists to make sure we only bet when we genuinely know something, not when our own
-mistakes make a fake "edge" appear:
+If OUR forecast is wrong we *think* the market is mispriced when really we are — and we lose. Each
+safeguard exists to only bet when we genuinely know something:
 
-1. **Only trade real markets (volume gate).** Skip "ghost town" markets where the prices look
-   real but almost nobody has actually traded — those quotes can vanish or be one lone player.
-2. **Use the real, live price (CLOB order book), not a stale one.** The old price source could be
-   ~20¢ out of date (the Shanghai 42¢-vs-70¢ you caught). We now read the live order book — the
-   prices you'd actually get — both for deciding edges and for showing each bet's current value.
-3. **Pay the real price, including slippage.** Instead of pretending we buy everything at the best
-   price, we walk the actual offers and pay the true average. "Edges" that only exist if you ignore
-   this correctly disappear.
-4. **Correct the forecast against the real thermometer (station-truth bias).** Our forecast ran a
-   couple degrees off at some stations. We now measure that against the *actual recorded
-   temperatures* at each city's official station and subtract it — and auto-skip cities where that
-   measurement is unreliable (mostly coastal ones).
-5. **The big one — don't argue with the market about the basic temperature (market-gap guardrail).**
-   If our forecast's overall temperature disagrees with what the market expects by more than ~2°,
-   we refuse to trade that event. The market nails the basic temperature; a 3° disagreement almost
-   always means WE are wrong, so that "huge edge" is a mirage. This kills most of the insane edges.
-
-Net effect: far fewer trades, but each one is on a real/liquid market, at the true live price, with
-a forecast corrected to the real station, and only where we broadly agree with the market on the
-basic temperature. That's the only honest path to a real edge.
-
-6. **Don't bet on temperatures that already can't happen (observed-so-far floor).** Late in the day
-   the high/low is mostly settled by what's already on the thermometer. The bot now reads today's
-   temperature so far and refuses to bet as if the high could finish *below* what's already happened
-   (or the low *above* it) — but only once that extreme has actually occurred (afternoon for highs,
-   late morning for lows), so a cool overnight reading can't fool it in the morning.
-
-**This weakness is now FIXED (2026-06-14, pre-production audit — F4).** The floor above handles the
-*locked-in* side; the bot used to stay over-eager about the temperature climbing *higher* than it really
-will once the afternoon peak has passed. The intraday σ schedule narrowed the spread, and the audit's
-**observed-anchored pricing center** finished the job: once the day's extreme is in, the bot centers on
-*what's actually happened so far + the empirically-measured remaining drift* (the 10-year backtest), not
-its earlier forecast — so a hot (or cold) forecast can no longer be priced confidently on a value that
-can't happen. See the "Pre-production audit + fixes" session note below.
+1. **Volume gate** — skip "ghost town" markets where almost nothing has actually traded.
+2. **Live CLOB price, not stale Gamma** — read the real order book both to find edges and to mark
+   open positions.
+3. **Real fill price incl. slippage** — walk the actual offers and pay the true VWAP; edges that
+   only exist at top-of-book disappear.
+4. **Station-truth bias correction** — measure the forecast's offset vs the actual station
+   thermometer and subtract it; auto-skip cities where that measurement is unreliable (coastal).
+5. **Market-gap guardrail** — if our forecast's temperature disagrees with the market's by more
+   than a confidence-scaled tolerance, refuse the event; the market nails the basic level.
+6. **Observed-so-far floor/ceiling** — once the day's extreme has actually occurred, don't price
+   the final high below (or low above) what's already on the thermometer; plus an intraday-σ
+   schedule + observed-anchored pricing center so confidence tracks reality through the day.
 
 ## Hard constraints (do not violate)
 
-- **SIMULATION ONLY.** `SIMULATION_MODE` must stay `True` (`backend/config.py`). Never
-  flip it until ready to go live. NOTE (audit F1): there is currently **no live-execution
-  path at all** — `SIMULATION_MODE` gates nothing yet, and the only "trade" is a DB row.
-  Going live is a build (order signing / submission / reconciliation), not a flag flip; it is
-  deferred BY DESIGN until the simulation proves an edge.
-- **Fix forecasts and measurement
-  first, then let the simulation tell us whether the model beats the market net of fees.
-- **Don't skip ahead.** Get the basics correct before any fancy model work. Better models
-  on top of a wrong location/timezone/scoreboard just produce confident nonsense faster.
-- **Preserve `calculate_edge` and `calculate_kelly_size`** before deleting any crypto
-  code — the weather path imports them from `backend/core/signals.py`.
+- **SIMULATION ONLY.** `SIMULATION_MODE` stays `True`. There is **no live-execution path** — going
+  live is a build (order signing / submission / reconciliation), deferred until the simulation
+  proves an edge.
+- **Fix forecasts and measurement first**, then let the simulation say whether the model beats the
+  market net of fees. Get the basics right before fancy model work.
+- **Preserve `calculate_edge` / `calculate_kelly_size`** (in `backend/core/sizing.py`) — the
+  weather path imports them.
+- **`.env` overrides `config.py`** (pydantic-settings). Any config change must check `.env` first.
 
-## Phase order (from the build plan)
+## Current state (2026-06-30)
 
-| Phase | Goal | Status |
-|---|---|---|
-| 0 | Run unchanged in simulation; commit known-good baseline | done (repo runs) |
-| 1 | **Cut crypto cleanly** — extracted `calculate_edge`/`calculate_kelly_size` to `backend/core/sizing.py`; deleted `signals.py`/`crypto.py`/`btc_markets.py`/`markets.py`; removed BTC scan job; BTC endpoints/models fully removed (2026-06-14, were empty stubs); dropped BTC-only config | **done** |
-| 2 | **Fix the scoreboard (THE LINCHPIN)** — the yes/no vs up/down bug | **done** |
-| 3 | Correctness — right station per platform, local-day high, robust market parsing (ranges, skip-don't-guess) | **done** (Polymarket; Kalshi structured-fields part deferred until Kalshi is enabled) |
-| 4 | Honest probability — fitted+widened distribution + lead-time uncertainty **done**; per-station bias correction **done** (historical backfill, no sim needed); climatology **deferred** (markets are 0–1 day out so climatology barely matters) | **done** |
-| 6 | Real costs — subtract fees+spread before edge check and in P&L; add fee field; re-tune sizing; weather daily-loss stop | **done** |
-| 5 | Stronger model — add ECMWF + ICON and blend; intraday conditioning | next (or run-and-evaluate, Phase 7, first) |
-| 7 | Run weeks in simulation; decision point: does it beat the price net of fees? | |
-| 7+ | Profitability levers (selectivity, intraday, threshold tuning, exit logic, more cities) | |
-| 8 | Optional observe-only cross-platform arbitrage scanner | |
-| 9 | GATED go-live (connect to polymarket and run the bot live)| |
+Live 24/7 on the server, simulation only, GFS+ECMWF+ICON blend deployed (σ-inflation 2.04).
 
-Re-run the scoreboard after every change. One change at a time, always keep it running.
+**A full quant audit (2026-06-29, `AUDIT_2026-06-29.md`) concluded the bot has no edge as deployed
+and is losing** (active book −$924/27 settled). Root cause: the day-ahead probability distribution
+is 3–4× flatter than the market's, so the bot bets NO against the bucket the market correctly
+favours. The earlier "at parity" reading was a backtest artifact (in-sample σ + look-ahead + an
+Asia timezone leak). One real seam exists: the forecast *center* beats the market inland (Chicago
+OOS) — the over-wide σ is smearing it away.
 
-## Current state (2026-06-28)
+**Direction (set 2026-06-30):**
+- **Pursue a SAME-DAY taker edge.** Same-day books are deep and fill instantly; the catastrophic
+  too-flat-σ problem is a *day-ahead* phenomenon (same-day uses the honest intraday curve). Edge is
+  a nowcasting problem: observed-so-far + empirical intraday drift vs the market price.
+- **Park the day-ahead maker leg.** Maker orders barely fill (~3.7% in sim; they expire before the
+  extreme forms). Not relying the strategy on whether they fill.
+- **Near-term goal = trade evenly with the market (parity) first**, then push for edge. Profitable
+  PM weather bots are proven possible — the edge is a given; the question is HOW, not WHETHER.
+- Judge on **Brier per slice (bootstrap CI)**, not P&L (too noisy at this scale).
 
-**As of 2026-06-28 (this session):** the **GFS+ECMWF+ICON blend is LIVE** (deployed 2026-06-22,
-σ-inflation 2.04) and the scoreboard was **hard-reset to a clean $10k** that day (old book archived).
-Active set is **6 cities** (`nyc, chicago, denver, tokyo, paris, hong_kong`) — the backtest's
-edge/parity set; the laggards (london/miami/seoul) and structurally-broken stations (LA/shanghai) are
-parked. Execution is now **HYBRID**: day-ahead markets → **maker** (rest limit orders, thin books),
-same-day → **taker** (deep books, no adverse-selection trap). We're in **Phase 7 run-and-evaluate**
-with a defined plan: **judge on Brier, not P&L**; **~1-week fill-rate gate → ~3-week directional read →
-~6–8-week (≈300–400 trades) conclusion**, all inside the summer regime the backtest is calibrated to.
-The backtest method was code-audited this session and is sound + conservative (see Session 2026-06-28).
-Detail in the auto-memories (`maker-live-status-open-questions`, `forecast-skill-diagnosis-multimodel`,
-`calibration-backfill-vs-market`).
+Open audit fixes worth doing regardless (full list in `AUDIT_2026-06-29.md` §1): kill the
+NO-on-modal trade + tighten the market-gap guardrail; add a trailing-drawdown halt; calibrate
+probability (isotonic/Platt); point-in-time storage; a real event-driven P&L backtest; lock down
+the unauthenticated control endpoints; fix the taker/maker double-book and UTC settlement clock.
 
-### Historical snapshot (2026-06-21)
+## Phase order
 
-Phases 1–7 (model-correctness + cost) done; in **Phase 7 (run-and-evaluate)**, bot live 24/7 on
-the server (systemd `weatherbot.service`, port 8000; this machine IS the runner). **The
-freeze-and-collect stance turned into targeted action once the data spoke (2026-06-21).** At 58
-settled trades the scoreboard said: our forecast is at **PARITY with the market inland and a clear
-DEFICIT coastal** — model Brier ~0.26 vs market ~0.22, i.e. **no proven edge anywhere yet** (we've
-found where we LOSE, not where we WIN). Root cause: GFS runs ~1.5°F **cold on highs** (−2°F on hot
-days) with a **too-thin ensemble**, and the damage concentrates in **un-resolvable coastal
-stations**. **Shipped (a):** dropped **los_angeles + shanghai** from active trading (the two worst,
-structurally un-correctable stations: LA marine layer, Shanghai has no obs station) and added an
-active-vs-retired dashboard filter (no data deleted). **Next, not yet built:** **(b)** the
-**ECMWF+ICON blend + bias re-fit** — the real model-change / clock-reset; build & validate OFFLINE
-first. **(c)** keep HK/Tokyo/Seoul and watch (small samples). The edge still has to come from the
-trading-side layers; a better forecast only closes the deficit toward the market. See "Session
-2026-06-21" below.
+0 baseline · 1 cut crypto · 2 fix scoreboard (linchpin yes/no bug) · 3 correctness (station, local
+day, market parsing) · 4 honest probability (fitted+widened dist, station bias) · 6 real costs
+(fees+spread, net edge) — **all done**. 5 stronger model (blend) — **done/live**. **7
+run-and-evaluate — current** (does it beat the price net of fees?). 7+ profitability levers · 8
+optional arb scanner · 9 gated go-live.
 
-### Session 2026-06-28 — HYBRID execution shipped; city-cut & backtest re-verified; run plan set
-Phase-7 run-and-evaluate. One feature shipped + several analytical conclusions (code committed/pushed).
+## What's already fixed (don't re-break)
 
-- **HYBRID maker/taker routing — SHIPPED (commit `6c27b20`).** Was all-maker when the flag was on
-  (posting even SAME-DAY — the market's sharp zone + worst adverse selection for a resting order). Now
-  routes BY LEAD TIME: **day-ahead → maker** (rest limit orders; thin books, ~$1k/bucket of flow,
-  outcome unresolved 24h+ out so adverse selection is mild), **same-day → taker** (deep books, instant
-  fill, never rests into settlement). New `is_day_ahead(city_key, target_date)` in `weather.py` (future
-  local day at the station, same clock as observed-floor/intraday-σ); `scheduler.py` splits signals and
-  runs BOTH paths (taker falls through, no early return); flag-OFF = all-taker, byte-identical. **Latent
-  bug fixed:** the taker now shares the maker's `_committed_and_counts`, so resting orders + same-day
-  trades JOINTLY respect the allocation/city-day/open-count caps (taker was blind to resting cash →
-  over-allocation). Day-ahead-only posting also makes the 6h GTD TTL safe (a day-ahead order expires the
-  night before the extreme forms → **settlement-aware TTL deferred, not urgent**). Verified live:
-  `Hybrid: 9 day-ahead→maker, 6 same-day→taker`; `is_day_ahead` unit-tested across 6 stations; suite green.
-- **Dashboard reflects hybrid — SHIPPED (commit `985e758`).** Resting panel retitled "day-ahead maker"
-  + copy explains the split; the "Open positions" card exposure now COUNTS resting maker cash (matches
-  the bot's real allocation — it was understating, showing ~half-full while actually capped). Rebuilt
-  `frontend/dist`.
-- **Stale same-day resting orders removed (runtime).** Deleted the 2 pre-hybrid same-day resting orders
-  (nyc/chicago, 0 fills) the hybrid system wouldn't post; 3 day-ahead orders remain (Tokyo's is filling —
-  early positive fill-rate signal). Freed ~$477 allocation.
-- **City cut RE-VERIFIED — it HOLDS.** Computed per-city P&L with bootstrap CIs from the archive book:
-  the cut cities (london +$537, miami +$333) WERE the live profit leaders, but every CI spans $0 (miami's
-  "significance" = n=3 all-wins, an artifact). At n=3–16/city, P&L is pure VARIANCE — it can't rank
-  cities; only LA/shanghai losses are statistically real. The cut matches the faithful backtest reruns
-  almost exactly (keep chicago/nyc/denver/HK/tokyo; cut london/miami/seoul; paris the one marginal keep).
-  **Do NOT re-add london/miami on their P&L** — that's the variance trap in reverse. See
-  [[feedback-hold-backtest-conviction]].
-- **Backtest method AUDITED (`calibration_backfill.py`) — SOUND + conservative.** No lookahead (forecast
-  from archived feed; market = contemporaneous ~06:00-UTC prices-history, not settled; outcome only
-  scores); grading guarded (drops events without exactly one YES>0.9 winner); model vs market scored on
-  the SAME buckets. The one bias — model gets in-sample best-fit σ, live uses fixed 2.04 — FLATTERS the
-  model, so the parity-to-slightly-behind verdict is conservative and **cannot manufacture a fake edge
-  that bleeds**. Cross-validated 3 ways incl. its gap (~0.03) matching the live scoreboard gap (~0.031).
-- **RUN PLAN: judge on BRIER, not P&L.** P&L is too noisy to cleanly prove a small edge at this scale
-  (+$1.1k→−$95 at n≈55). At ~5–9 settled/day: **~1-week fill-rate gate** (does the maker fill —
-  kill-switch), **~3-week directional Brier read**, **~6–8 weeks / ~300–400 trades = real conclusion**,
-  all inside summer (matches the backtest regime; past ~10 weeks autumn confounds). Watch the
-  model-vs-market GAP per city, NOT absolute Brier (different denominators: traded vs all buckets). Don't
-  change anything between checkpoints (each change resets the clock).
-- **Decisions (no code):** sizing STAYS bankroll-relative (already compounds) — don't pin to $10k;
-  compounding only matters once the edge is proven and is capped by the ~$15–20k capacity ceiling.
-  **Kalshi is NOT a drop-in** — only 3 of 6 cities (US-only; no Tokyo/Paris/HK), different settlement
-  stations (NYC Central Park vs our LaGuardia; Denver KDEN vs our Buckley → re-point + re-bias), plus its
-  own market parser / order-book walker / fee model / RSA auth. A real build, deferred until the
-  Polymarket edge is proven.
+- **Scoreboard grading (linchpin)** — `grade_signal_outcome` translates yes/no vs up/down;
+  every weather prediction used to grade wrong.
+- **Market fetch** — Gamma `tag_slug=daily-temperature`, paginated, city/metric/date from event
+  slug, buckets parsed as numeric ranges, skip-don't-guess. `parse_bucket_label` handles °F ranges,
+  °C single-degree, sub-zero, open tails.
+- **Station/timezone** — `CITY_CONFIG` lat/lon at the settlement station; `timezone=auto` so the
+  high/low is the local-day extreme.
+- **Honest probability** — fitted Normal over ensemble mean/spread, integrated over the bucket's
+  rounding interval; spread widened (under-dispersed ensemble); per-station bias subtracted
+  (`station_bias.json`, Meteostat station obs).
+- **Costs** — enter at the real ask/VWAP; gate+size on net edge (gross − spread/2 − fee); `fee`
+  column; `calculate_pnl` pays net odds on win, full stake on loss.
+- **Liquidity/slippage** — min liquidity + max relative-spread gates; size capped to a book
+  fraction; candidates walk the real CLOB book for exact VWAP (`backend/data/orderbook.py`).
+- **Sizing is bankroll-relative** — `KELLY_FRACTION` 0.05, `KELLY_MAX_TRADE_FRACTION` 0.025,
+  `WEATHER_MAX_ALLOCATION_FRACTION` 0.20, `WEATHER_MAX_CITY_DAY_FRACTION` 0.07, daily-loss 0.15.
+- **Settlement** — matches the exact bucket by id; settles when closed OR local day over + price
+  decisive.
+- **Cities** — 6 active (`nyc, chicago, denver, tokyo, paris, hong_kong`); LA/shanghai cut
+  (un-resolvable stations). Cut cities stay in `CITY_CONFIG` so open positions still settle.
+- **°C cities** — native unit throughout, no conversion; σ-floor constants scaled 1/1.8 for °C.
 
-### Session 2026-06-21 — Phase-7 diagnosis; coastal cut SHIPPED; blend evidence (offline); dist tracked
-Read the live scoreboard (58 settled), diagnosed why we don't beat the market, ran offline backtests,
-and shipped the first targeted change. The full analysis lives in the auto-memory
-`forecast-skill-diagnosis-multimodel.md`; summary:
+## Known open / deferred
 
-- **Diagnosis (DB + offline).** 58 settled: net ~−$95 (round-tripped from a +$1.1k peak), win 55%,
-  **model Brier 0.261 vs market 0.224 → forecast PARITY inland, DEFICIT coastal, no proven edge.**
-  It's the **HIGHS** (calibration gap +0.20 high vs −0.01 low) in a recent **HEAT regime** (gap
-  spiked 06-18→20). Independent confirms: model-vs-market "who was closer" ≈ coin-flip (27/23) but we
-  lose bigger when wrong; wins & losses have identical disagreement with the price (no edge signature).
-- **Multi-model evidence (offline, NOT deployed).** Skill test (historical-forecast-api vs Meteostat,
-  n=612): equal-weight **GFS+ECMWF+ICON blend** cuts high de-biased RMSE ~10% and ~halves the bias;
-  **ECMWF is ~unbiased in heat where GFS is −2°F.** It's a BLEND not a switch (ECMWF is worse at
-  coastal LA). Dispersion test (n=32, directional): 3-model pool ~doubles the honest spread (fixes the
-  thin tail) vs the bot's arbitrary 1.3×/2°F widening. Re-pricing our OWN trades: blend improves Brier
-  0.265→0.247 (closes ~half the gap to market, **doesn't beat it**); P&L impact **noise-dominated** at
-  n=58. **Bias correction stays but is PER-MODEL** — the current GFS `station_bias.json` would
-  mis-correct the blend; must re-run `bias_backfill` against the blend.
-- **Coastal-exclusion test → criterion is STATION RESOLVABILITY, not "coastal".** Damage = **shanghai
-  −$534** (no obs station) + **los_angeles −$312** (marine layer) [+ seoul −$94, lean]; **hong_kong
-  +$391 BEATS the market** (HKO HQ is a real urban station) and **tokyo +$56** is fine. Cutting
-  shanghai+LA → book +$750; blanket-cutting all 5 coastal is WORSE (+$396) because it throws out HK.
-  The dashboard's amber **"uncorrected"** tag = those 5 coastal cities (it means un-bias-correctable,
-  not geography — Miami/London are coastal but corrected). The cut **stops the bleed → break-even/
-  positive, it does NOT prove an edge** (inland still parity; +P&L is variance-flattered by London/Miami).
-- **SHIPPED (a) — commit `90e3df8`.** Removed `los_angeles,shanghai` from `WEATHER_CITIES`
-  (`config.py`); they STAY in `CITY_CONFIG` so open positions still settle and history is preserved
-  (settlement isn't gated by `WEATHER_CITIES` — verified). New `/api/dashboard` `city_segments`
-  (active vs retired, via `_segment_from_trades`, which also refactors `_compute_bias_segments`);
-  `Scoreboard.tsx` renders an "Active vs retired cities" panel (active row = forward book, retired =
-  preserved history). Verified live: active **+$750** / retired **−$846** over 58 settled. Service
-  restarted; now scans 9 cities.
-- **`frontend/dist` now TRACKED in git — commit `fe316ad`.** A plain `git pull` carries the built
-  dashboard (no `npm run build` needed). Anchored the generic ignore to `/dist/` (Python build still
-  ignored). **Gotcha:** rebuild + commit `dist` after ANY frontend source change or the committed
-  bundle goes stale. (Supersedes earlier "dist is gitignored, rebuild after pull" notes below.)
-- **(b) BUILT this session, GATED OFF (commit `89004e0`).** Full GFS+ECMWF+ICON blend behind
-  `WEATHER_BLEND_ENABLED` (default False → live byte-identical): `weather.py` multi-model fetch +
-  EQUAL-MODEL-WEIGHT member pooling + `EnsembleForecast.is_blend` σ-inflation + the blend reads its
-  own re-fit `station_bias_blend.json` (Tokyo+HK become correctable under the blend). `bias_backfill.py
-  --blend`, `tests/test_blend.py`, and `backend/data/blend_validate.py` (the offline pre-deploy gate).
-  Verified flag-off identical + flag-on smoke sane (NYC 83.9±1.7°F vs GFS 82.8±1.2°F). **To DEPLOY
-  (the real clock-reset):** run `blend_validate` → set `WEATHER_BLEND_SIGMA_INFLATION` (placeholder
-  1.3, the one open knob) → regen blend bias → flip the flag → restart.
-- **NOT done / next session:** validate + deploy (b) per the gate above; **(c)** keep watching
-  HK/Tokyo/Seoul to separate edge from variance. Capacity/edge framing unchanged — see
-  `golive-plan-and-capacity` memory.
-
-### Session 2026-06-16 — bias badge on every trade row; freeze-and-collect decided; go-live economics
-No model changes (Phase 7 freeze). One code change + a strategic review (committed/pushed to `main`).
-
-- **Per-trade bias-cohort badge — DONE (commit `a951334`).** `TradesPanel.tsx` now renders a
-  `corrected`/`uncorrected` badge (amber = uncorrected) on EVERY row of both the Active and Settled
-  lists — the tag was already persisted + returned by the API but only shown in the aggregate
-  `Scoreboard`. Verified the data first: all 27 trades (14 open / 13 settled) were already correctly
-  tagged, 0 NULLs, 0 mismatches vs the live per-(city,metric) predicate. Tag-at-entry semantics
-  preserved. Frontend rebuilt (`npm run build`); the live server serves it (StaticFiles from
-  `frontend/dist`, which is gitignored — no restart needed, but dist does NOT travel via git, so
-  rebuild on other machines after pull).
-- **Decision: FREEZE the model, collect data (weeks).** 13 settled / ~1 day (+$597, 77% win,
-  Brier ~0.12) is noise. Only instrumentation changes during the run; model changes restart the
-  clock. Refinements deferred until justified by data AND mechanism-rooted (leading candidate: the
-  Phase 5 **ECMWF+ICON** blend), never tuned to a noisy week (overfitting = the real self-deception
-  risk in thin, noisy markets).
-- **Execution-realism review (no code).** At the planned ~$1k go-live (caps are bankroll-relative,
-  so sizes ÷10 → ~$25 max bet), measured slippage is ~0–1% and is ALREADY charged into the
-  scoreboard (`entry_price` = fill VWAP; `net_edge` = edge − (vwap − mid) − fee). Adverse selection
-  in thin, no-insider weather markets is minor, possibly in our favor (we may be the faster side).
-  So the sim is a good real-money proxy at $1k; the $1k step is **proof-of-edge, not income**
-  (~$5–10/day even if the edge is real). Real risks = our own forecast calibration + small-sample
-  self-deception, NOT execution.
-- **Liquidity question is recoverable post-hoc — no tagging needed.** `trades.signal_id` →
-  `signals.liquidity`/`rel_spread`, plus realized slippage = `entry_price − market_price_at_entry`,
-  are stored on all 27 trades. Sort/bucket by liquidity whenever; it only reveals whether the
-  MODELED edge concentrates in thin books (can't prove real-money survival — that needs live fills).
-- **Capacity / bankroll ceiling (measured from live books).** ~55 of ~240 markets pass the
-  liquidity/vol/spread gates; ~15–18 actionable at once; ~$175 deployable/market before 2% slippage
-  (the bot's 10%-of-Gamma-liquidity cap ~$308 is slightly optimistic vs real depth). → capacity
-  ~$2.6–4.4k/cycle → **max useful bankroll ~$15–22k** for the current Polymarket slate before thin
-  books clamp sizes and self-slippage erodes the edge. **$/day at the ceiling, IF a real 2–5% net
-  edge: ~$60–200/day.** The $50–100/day goal needs ~$15–20k bankroll (≈ the strategy's realistic
-  ceiling on this slate); expandable by adding low markets / more cities / Kalshi. Everything is
-  `capacity × edge` — edge is the unproven term the run is testing.
-
-### Session 2026-06-15 — bets halved, daily-loss limit raised, bias-cohort tagging, cloud plan
-First live run + three user-directed changes (all simulation-only; committed + pushed to `main`).
-
-- **Started the bot for real (Phase 7 data collection began).** First scans placed trades
-  (Polymarket weather, °F + °C cities). Open exposure self-refills toward the
-  `WEATHER_MAX_ALLOCATION_FRACTION` cap (~20%/$2k) as room frees up.
-- **Position sizes HALVED (commit `94e0223`).** `KELLY_FRACTION` 0.10→**0.05** (halves normal
-  bets) AND `KELLY_MAX_TRADE_FRACTION` 0.05→**0.025** (so the strongest bets, previously pinned
-  at the 5%/$500 cap, also halve → 2.5%/$250). **Gotcha worth remembering:** `.env` (gitignored)
-  had `KELLY_FRACTION=0.10`, and pydantic-settings makes `.env` OVERRIDE the `config.py` default —
-  so editing `config.py` alone did nothing. Fixed `.env` AND `.env.example` to 0.05. Verified live:
-  every bet halves exactly (ratio 0.500). **Any future config change must check `.env` first.**
-- **Daily-loss limit raised (commit `94e0223`).** `DAILY_LOSS_LIMIT_FRACTION` 0.075→**0.15**
-  (~$1,500 @ $10k) so a couple of losing end-of-day settlements don't trip the breaker and stall
-  data collection. Note the breaker is **realized-loss-only** (`settled==True`,
-  `settlement_time>=today UTC`), and temp markets settle at local day-end — so it bites after a
-  bad settlement batch, not intraday.
-- **Halved the existing open trades in the DB** (runtime data, not in git): a one-off
-  `UPDATE trades SET size=size/2 WHERE settled=0`. Bankroll untouched (open stakes aren't debited
-  until settlement). Did NOT reset the scoreboard (user's instruction).
-- **Bias-cohort tagging of the scoreboard — DONE (commit `f35dfdf`).** So we can answer
-  empirically whether the **5 uncorrected cities** (LA, Tokyo, Seoul, Hong Kong, Shanghai — the
-  coastal ones the bias model skips; ~31% of current open exposure) underperform the **6 corrected**
-  (NYC, Chicago, Miami, Denver, London, Paris). New `weather.is_bias_corrected(city, metric)`
-  (mirrors the `get_station_bias` gate); new `Trade.bias_corrected` column **set at entry time**
-  (so a later bias backfill that fixes a city doesn't relabel old trades), migrated in
-  `ensure_schema`; one-off `backend/data/backfill_bias_corrected.py` tagged the 18 existing trades
-  (12 corrected / 6 uncorrected). `/api/dashboard` returns a per-cohort scoreboard
-  (`_compute_bias_segments`: open/settled, win rate, total P&L, Brier from executed trades);
-  `Scoreboard.tsx` renders the comparison; `TradeResponse` carries the per-trade tag. Reading:
-  **if "uncorrected" trails on win rate/P&L/Brier, the missing bias is leaking; if both track,
-  the market-gap guardrail is covering for it.** Fills in as trades settle.
-
-#### Session 2026-06-15 → next: cloud migration (DigitalOcean) — PLANNED, not started
-User wants the bot always-on without leaving their PC on, and the **scoreboard shared** between
-their PC and a MacBook. Decision: a **single cloud runner** (no Postgres needed — keep the
-existing **SQLite** as the one source of truth, since only the server runs the bot).
-- **Provider/size:** DigitalOcean droplet, smallest **$6/mo** (1 vCPU, 1 GB RAM, Ubuntu). 1 GB
-  chosen over 512 MB for numpy/pandas/scipy headroom.
-- **Access model:** SSH from either laptop; **dashboard viewed over an SSH tunnel** (e.g.
-  `ssh -L 3000:localhost:3000`), NOT a public port — the control endpoints are unauthenticated
-  (audit F2), so the dashboard must stay private. Run **Claude Code on the server** (SSH in, run
-  `claude` in the repo there) so edits apply to the live bot.
-- **Steps to do with the user (one at a time):** (1) create DO account + droplet [user does
-  signup/payment]; (2) SSH key + first login; (3) install Python 3.12 + Node + git, clone repo,
-  venv + `pip install -r requirements.txt`, `npm install`; (4) recreate `.env` (gitignored) with
-  `KELLY_FRACTION=0.05`; (5) **scp the current `tradingbot.db` (~29 MB) up** so we keep the trades
-  already collected; (6) run backend under a process manager (systemd or tmux) so it survives
-  logout/reboot + auto-restarts; (7) tunnel command for the dashboard; (8) get Claude Code running
-  on the server. After cutover, **the PC stops being the runner** (avoid two bots → diverging DBs);
-  laptops just view/edit. Code stays synced via git both ways.
-
-### Pre-production audit + fixes (2026-06-14, latest)
-A full adversarial pre-production audit was run (findings F1–F24; the report is kept locally as
-`AUDIT_REPORT.md`/`.pdf`, NOT committed). Fixes below are all simulation-only; tests + imports pass;
-committed and pushed to `main`. New config knobs: `WEATHER_MAX_CITY_DAY_FRACTION` (0.07),
-`WEATHER_MIN_MARKET_GAP_F` (0.5), `WEATHER_MARKET_GAP_SIGMA_K` (2.0).
-
-- **Sub-zero buckets parse correctly (F6).** `parse_bucket_label` now accepts an optional leading
-  minus (and normalises the unicode minus); `"-2°C or below"` no longer reads as a positive `+2`. A
-  latent winter bug for the °C cities.
-- **Yes/No mapped by LABEL, not index (F7).** New `weather_markets.yes_index()` reads the market's own
-  `outcomes` and locates "Yes"; used at entry, settlement and the dashboard mark-to-market. Live Gamma
-  data is `["Yes","No"]` today (verified), so the default is unchanged — defensive against a flipped
-  market inverting price / token / fill / settlement.
-- **Kelly sizes off FREE cash (F9).** `_available_bankroll()` = live bankroll − open weather exposure
-  (open stakes aren't debited until settlement, so the raw bankroll overstated free cash and over-bet).
-  The scan sizes off this.
-- **Per-city/day correlated-risk cap (F11).** `WEATHER_MAX_CITY_DAY_FRACTION` (0.07) caps total open
-  stake on any one city+day (all its buckets hinge on one forecast). Enforced per-trade in the scheduler.
-- **`MAX_TOTAL_PENDING_TRADES` (20) now ENFORCED (F10).** It was defined but unused; the scheduler now
-  stops opening new trades at the cap. (The realized-only daily-breaker's slow-reaction refinement was
-  left low-priority, per the user.)
-- **Observed-anchored pricing center (F4) — the real fix for evening over-confidence.** The intraday σ
-  schedule shrank σ but kept centering on the stale forecast and ignored the curve's MEAN, so a hot/cold
-  forecast could be priced ~confidently on a value that can no longer happen (the observed-floor only
-  bounds ONE side). New `EnsembleForecast.pricing_center()` anchors the in-progress-day center on
-  observed-so-far + `intraday_drift()` (the curve mean) once the extreme is in; BOTH the bucket
-  probability and the market-gap guardrail use this same center. Curve numbers are NOT hand-tuned.
-- **Market-gap tolerance scales with confidence (F3).** Was a flat 2°F; at the ~0.3°F evening σ a 2°F
-  disagreement puts our mass on the wrong bucket. Now `clamp(WEATHER_MARKET_GAP_SIGMA_K·σ_eff,
-  WEATHER_MIN_MARKET_GAP_F, WEATHER_MAX_MARKET_GAP_F)`, stored on the signal as `market_gap_threshold`
-  so `passes_threshold` stays consistent with pricing. Offline demo: a hot 86°F forecast with obs-so-far
-  84°F now prices ~100% on `84-85` (was 94% on the wrong `86-87`); the evening tolerance tightens
-  2.0→0.64°F.
-- **Resolution-source (F5) — VERIFIED; mostly fine, one item deferred.** Read the live Polymarket
-  resolution text: Hong Kong settles on the HK Observatory "Absolute Daily Max/Min (°C), one decimal" —
-  a different PROVIDER than the Meteostat data the observed-floor / bias read (US = NWS, intl =
-  Wunderground per each market's text). Bucket ROUNDING is fine (single-integer °C labels =
-  round-to-nearest, which the math already does → no change). The residual fix — point the
-  observed-floor / bias at each market's official provider — is DEFERRED (tied to the σ/guardrail work;
-  Fix A+B already suppress when our thermometer disagrees with the market while confident, partly
-  covering it).
-- **Acknowledged, deferred BY DESIGN:** no live-execution path yet (F1 — see Hard constraints); the
-  control-API endpoints (`/api/bot/*`, `/api/run-scan`, `/api/settle-trades`) are unauthenticated (F2)
-  — gate them before any deploy.
-
-New code: `yes_index`, `_available_bankroll`, `intraday_drift`,
-`EnsembleForecast.pricing_center` / `effective_sigma_for`, `WeatherTradingSignal.market_gap_threshold`.
-Tests added to `tests/test_forecast_distribution.py`. **Still pending:** live-validate the F3/F4 fixes
-when the Open-Meteo/Meteostat quota resets; the F5 re-sourcing is the remaining tied-off item.
-
-### Latest session (2026-06-14, current) — intraday σ ON, relative sizing, BTC/AI purge, repo moved
-- **Intraday σ schedule — built + ENABLED** (`WEATHER_INTRADAY_SIGMA_ENABLED=True`; see the
-  "Intraday σ schedule — DONE" section below). **Pending first-live-scan validation** once the
-  Open-Meteo quota is back: evening highs should get confident, mornings stay unsure, bet sizes
-  must not blow up (the `_MIN` rail). Verified offline (tests + a synthetic-forecast run).
-- **Position sizing is now RELATIVE to the live bankroll** (scales when we go live smaller). This
-  fixed the "every bet was a flat ~$75" bug — fixed-$ caps were clamping every Kelly bet to one
-  size. Per-trade ≤ `KELLY_MAX_TRADE_FRACTION` (**5%**), open exposure ≤
-  `WEATHER_MAX_ALLOCATION_FRACTION` (**20%**), min trade `WEATHER_MIN_TRADE_FRACTION` (**0.1%**),
-  daily stop `DAILY_LOSS_LIMIT_FRACTION` (**7.5%**); `KELLY_FRACTION` stays 0.10. **Removed**
-  settings: `MAX_TRADE_SIZE`, `WEATHER_MAX_TRADE_SIZE`, `WEATHER_MAX_ALLOCATION`, `DAILY_LOSS_LIMIT`.
-  Full detail in "Position sizing made RELATIVE" below.
-- **Dead-code purge of forked BTC/crypto + AI scaffolding.** Deleted `backend/ai/` (unused
-  Claude/Groq hooks), the `AILog`/`ScanLog`/`BtcPriceSnapshot` tables, ALL BTC/crypto API
-  endpoints + response models + the btc fields in the dashboard schema, the frontend BTC
-  types/fetchers, and the stale dashboard screenshot. **DB tables are now only
-  `trades`/`signals`/`bot_state`.** Verified: backend imports + full test suite pass, frontend
-  typechecks clean. Kept (NOT dead): `kalshi_*` (deferred), the research `.md` docs.
-- **Repo moved.** `origin` → **github.com/cameronandriesz2006-bot/weather_trading_bot** (pushes
-  authenticate as the `cameronandriesz2006-bot` account). Previous repo kept locally as `old-origin`
-  (orionpeptidelab-cyber/polymarket-kalshi-weather-bot). History was scrubbed of an upstream-author
-  Mapbox secret token (so all commit IDs changed) to pass GitHub push-protection.
-- **Unchanged & safe:** `SIMULATION_MODE` is still `True`. The one pre-existing failing test
-  (`tests/test_weather_markets.py` — a stale "Tokyo untracked" assertion) predates this session and
-  is unrelated to the bot's operation.
-
-### Forecast-calibration work (2026-06-14, third pass)
-The bot was producing many large (20-40%) edges that were **mostly mirages that would LOSE**:
-our forecast mean sits up to ±3° off the **market-implied mean** per station (NYC/LA warm,
-Miami/Paris cold), and on 1°C/2°F buckets a 2-3° shift manufactures a huge fake edge. Root cause
-is **per-station forecast error vs the actual settlement station**, NOT an Open-Meteo bug. Two fixes:
-- **Market-gap guardrail — DONE (issue 12).** The market-implied mean (probability-weighted center
-  of the live bucket prices) is a near-truth estimate of the settling value on a near-settlement day.
-  If our bias-corrected forecast mean differs from it by more than `WEATHER_MAX_MARKET_GAP_F` (2.0°F,
-  scaled 1/1.8 for °C), we suppress the WHOLE event — we're almost certainly the miscalibrated one,
-  not holding free money. `compute_event_market_means` (scan, post-live-price) sets
-  `WeatherMarket.event_market_mean`; `WeatherTradingSignal.market_gap`/`market_gap_ok` gate it in
-  `passes_threshold` with a reasoning note. Live: suppresses Paris/Shanghai/Miami/LA/NYC-warm events;
-  actionable ~18→~14. The mean is the easy part the market nails same-day — a real edge must come from
-  distribution SHAPE around a similar mean, not from disagreeing on the level by several degrees.
-- **Station-truth bias — DONE (issue 13).** The old bias backfill calibrated GFS against **ERA5
-  reanalysis**, but ERA5 is itself gridded and agrees with GFS to <1° while differing from the
-  official station by 2-3° (worst at coastal/microclimate stations a coarse grid can't resolve —
-  LAX, Miami). So the real gap (to the station the market settles on) went uncorrected. Now
-  `bias_backfill.py` uses **realized Meteostat station observations** (`d.meteostat.net` daily, current
-  + global + keyless) as the "actual", per the station nearest each market's settlement point, and
-  computes bias in each city's **native unit** (°F/°C). `get_station_bias` scales the safety cap by
-  1/1.8 for °C. Two guards make it robust:
-    - **Source-consistency guard.** The 60-day forecast history comes from historical-forecast-api,
-      but the bot trades on **ensemble-api**. For coastal coords those two APIs snap to different grid
-      cells and disagree by ~5° for the SAME `gfs_seamless` (historical-forecast is the *deterministic*
-      run; the live model is the *ensemble mean*). We only keep a city's bias if the two agree on the
-      most-recent 3 days within `CONSISTENCY_MAX_F` (2°F); else skip (the guardrail still covers it).
-      → kept: nyc/chicago/miami/denver/london/paris; **skipped (coastal): LA, Tokyo, Seoul, HK**;
-      shanghai skipped (no obs station within ~35km of ZSPD Pudong).
-    - Native-unit storage + the existing min-samples/clamp gates.
-  Run `python -m backend.data.bias_backfill`; writes `station_bias.json` (method
-  `gfs_seamless_vs_meteostat_station_obs`).
-
-#### Observed-so-far floor/ceiling — DONE (issue 14, the safe half of intraday conditioning)
-Near settlement the daily high/low is nearly **locked in by what's already happened**, but the raw
-forecast stays too diffuse and finds fake edges on outcomes that are already physically impossible.
-Fix: the final high can't end below the max already recorded today, nor the low above the min —
-a **fact, not a tunable**. `fetch_observed_extreme` (`weather.py`) pulls today's tmax/tmin-so-far
-from the Meteostat station (observation-based, so it never OVERSTATES; lag only weakens the bound,
-never wrongs it), and `EnsembleForecast._fitted_bucket_prob` **censors** the distribution at it
-(`floor` for highs / `ceiling` for lows) — impossible buckets collapse to ~0 and the mass piles at
-the observed value. Wired into `generate_weather_signal` (pre-warmed per city/date/metric in the
-scan); shows `[obs floor/ceil N]` in the reasoning. Tests: `test_forecast_distribution.py`.
-**Critical safety = a time-gate:** the bound is only trusted on a finished local day, or on the
-in-progress day AFTER the extreme has typically occurred (high ≥ ~4pm local, low ≥ ~10am local;
-local clock approximated from longitude). Without it, a morning overnight reading made the bot
-wildly over-confident before the day's high had even happened (observed Chicago "floor" 76.6°F at
-3am vs a 71.7°F forecast → 100% on a low bucket). This is the **safe half** of intraday conditioning:
-it bounds the side that's already determined, using only a hard fact.
-
-#### Intraday σ schedule — DONE (gated off pending live validation; spec below)
-**Implemented (2026-06-14).** `intraday_curve.json` is loaded in `weather.py`
-(`_load_intraday_curve` + `reload_intraday_curve`, cached like `station_bias.json`);
-`intraday_sigma(city, metric, local_hour)` returns the curve `std` in native unit (None for
-Shanghai / missing hours). `EnsembleForecast._effective_sigma(raw_sigma, metric, local_hour)`:
-when intraday is enabled AND a `local_hour` is supplied (the caller passes one ONLY on the
-station-local in-progress day) AND the curve has a value, it returns
-`max(WEATHER_INTRADAY_SIGMA_MIN_F·scale, curve_std)` and skips the flat-floor/inflation/lead
-terms; otherwise the old formula is unchanged. `metric`+`local_hour` are threaded through
-`probability_high|low_in_range` → `_fitted_bucket_prob`. `generate_weather_signal` computes the
-hour via `station_local_hour(city, target_date)` and passes it; reasoning shows
-`[sigma X @Nh local]`. Config gates: `WEATHER_INTRADAY_SIGMA_ENABLED` (default **False**) and
-`WEATHER_INTRADAY_SIGMA_MIN_F` (0.3°F, scaled 1/1.8 for °C — the safety rail). Local hour now
-comes from the real station tz (`tz` added to `CITY_CONFIG`; DST-aware `zoneinfo` via
-`station_local_now`, longitude-approx fallback); the observed-floor was switched to the SAME
-clock so the two agree (this makes the floor's 4pm/10am gate fire at true local time, ~1h earlier
-than the old longitude estimate under summer DST — strictly more correct, still conservative).
-Tests: `tests/test_forecast_distribution.py` (curve std applied, shrinks morning→evening, _MIN
-rail, None/future falls back to old σ, missing-curve city falls back, local-hour gate). Verified
-live data: NYC high σ schedule `{6h:5.1 … 18h:0.3 … 21h:0.08}`, P(modal bucket) 0.16 @7am →
-0.94 @6pm. **To activate:** flip `WEATHER_INTRADAY_SIGMA_ENABLED=True` and live-validate per the
-caveats below (watch evening confidence rise, mornings stay unsure, and bet sizes not blow up).
-
-**Problem (recap).** Our forecast carries a flat minimum doubt (`WEATHER_SIGMA_FLOOR_F` = 2.0°F,
-scaled 1/1.8 for °C). The backtest proved that's wrong in BOTH directions: at 7am the real
-uncertainty in NYC's high is ±4.9°F (bot is secretly OVER-confident), and by 6pm it's ±0.3°F (bot is
-far too UNSURE — the "won't commit when the high is locked in" case). The observed-floor already fixed
-the *lower* side; this fixes the *spread* so the bot's confidence tracks reality through the day.
-
-**The data is built and validated (do NOT re-derive it):**
-- `backend/data/intraday_curve.json` — per city, per metric (high/low), per LOCAL hour: `{mean, std, n}`
-  of `(final daily extreme − extreme so far)`, in the city's NATIVE unit, from 10y of Meteostat hourly
-  obs (~1,530 summer days/city). **The `std` is the residual uncertainty at that hour** — exactly the σ
-  to use. Rebuild with `python -m backend.data.intraday_backtest` (offline; no Open-Meteo quota).
-- Validated against ground truth: `python -m backend.data.source_crosscheck` (Meteostat vs 554 resolved
-  Polymarket buckets) — sources agree to within ~0.5° rounding for 8/10 cities. **The curve is
-  offset-invariant** (it's a *relative* move), so small per-station offsets don't corrupt it.
-
-**Implementation spec (one change; gate it; unit-test without the quota):**
-1. **Loader.** In `weather.py`, load `intraday_curve.json` like `station_bias.json` (cached + a
-   `reload_*` for fresh files). Helper `intraday_sigma(city_key, metric, local_hour) -> Optional[float]`
-   returns `curve[city][metric][str(hour)]["std"]` in native unit, or `None` if absent (Shanghai has no
-   curve; missing hours).
-2. **Where it plugs in.** `EnsembleForecast._effective_sigma` currently returns
-   `max(raw*INFLATION, FLOOR) + lead_days*PER_LEAD_DAY`. Add: **only on the in-progress local day**
-   (`target_date == station-local today`, same condition the observed-floor uses), look up
-   `intraday_sigma(city, metric, local_hour)`; if present, use `sigma_eff = max(WEATHER_INTRADAY_SIGMA_MIN,
-   intraday_std)` and SKIP the flat-floor/inflation term (the curve is the empirical truth there; lead
-   term is 0 on the in-progress day anyway). For future days or when the curve is missing, keep the
-   existing formula unchanged. `_effective_sigma` will need `metric` + the local hour — thread them in
-   (the prob fns already know `metric`; compute local hour the SAME way as the floor, ideally via the
-   real station tz rather than the longitude approximation — consider storing tz in `CITY_CONFIG`).
-3. **Per-metric.** Highs and lows have DIFFERENT curves (lows lock late — min can fall at either end of
-   the day). Use the high curve for high markets, low curve for low markets. Already keyed by metric.
-4. **Config.** Add `WEATHER_INTRADAY_SIGMA_ENABLED` (gate; default False until live-validated) and
-   `WEATHER_INTRADAY_SIGMA_MIN_F` (≈0.3°F, scaled for °C) — a hard minimum so σ can never collapse to ~0
-   and turn a tiny edge into an enormous Kelly bet. THIS MIN IS A KEY SAFETY RAIL.
-5. **Interplay (leave these in place):** the observed-floor still censors below; the market-gap
-   guardrail still catches mean disagreements. The curve only narrows the *spread*. Together: floor sets
-   the ≥ bound, curve sets the width, guardrail vetoes if our center is off.
-6. **Tests** (`test_forecast_distribution.py`, no network): build a forecast, feed a local hour, assert
-   `_effective_sigma` ≈ the curve std at that hour and that it SHRINKS morning→evening; assert future
-   days still use the old σ; assert the `_MIN` floor holds; assert a missing-curve city falls back.
-
-**Caveats to respect:** curve is SUMMER-calibrated (months 5–9) — re-run with matching months if the
-season shifts. HK/Miami carry a small absolute offset (curve still valid; only their floor's absolute
-level is a touch soft, which errs safe). Shanghai has no curve → flat-floor fallback. After building,
-**live-validate when the quota is back**: evening highs should become confident, mornings should stay
-appropriately unsure, and watch that bet sizes don't blow up (the `_MIN` rail). Do NOT hand-tune the
-numbers — they come from the backtest.
-
-#### Position sizing made RELATIVE (2026-06-14) — DONE
-_(Numbers below were HALVED 2026-06-15: `KELLY_FRACTION` 0.10→0.05, `KELLY_MAX_TRADE_FRACTION`
-0.05→0.025, `DAILY_LOSS_LIMIT_FRACTION` 0.075→0.15. See "Session 2026-06-15" above for the
-current values + the `.env`-overrides-`config.py` gotcha.)_
-Every bet was entering at ~$75 regardless of confidence: the Kelly helper sizes off the live bankroll,
-but a **fixed $75 per-trade dollar cap** (`MAX_TRADE_SIZE`) sat far below what Kelly wanted on a $10k
-bankroll (typically $120–$500), so it clamped nearly every bet to the same number and erased the
-edge/confidence differentiation. Fix: all sizing/exposure limits are now **fractions of the LIVE
-bankroll** (so they scale when we go live at a smaller bankroll), and the single per-trade cap is a
-percentage, not a dollar amount:
-- `KELLY_MAX_TRADE_FRACTION` (**0.05** = 5% of bankroll) — the only per-trade cap, applied as a fraction
-  inside `calculate_kelly_size` (replaces the hard-coded `max_fraction=0.05` AND the `$75 MAX_TRADE_SIZE`).
-  Kelly now varies the stake under it (a 4× spread across edge/confidence in practice); only the
-  strongest bets clip at 5%. Removed the redundant `WEATHER_MAX_TRADE_SIZE` ($100) clamp in the signal
-  generator and scheduler.
-- `WEATHER_MAX_ALLOCATION_FRACTION` (**0.20**) and `WEATHER_MIN_TRADE_FRACTION` (**0.001**) replace the
-  fixed $2,000 / $10; `DAILY_LOSS_LIMIT_FRACTION` (**0.075**) replaces the fixed $750. The scheduler and
-  `/api/stats` compute the dollar equivalents off `state.bankroll`.
-- `KELLY_FRACTION` stays **0.10** (gentle, model still being proven). Risk levels chosen with the user.
-  Verified: sizes vary $117→$500 @ $10k and are exactly 1/10th @ $1k (same %), proving differentiation +
-  bankroll-relative scaling. Removed settings: `MAX_TRADE_SIZE`, `WEATHER_MAX_TRADE_SIZE`,
-  `WEATHER_MAX_ALLOCATION`, `DAILY_LOSS_LIMIT`.
-
-### Latest changes (2026-06-14, second pass)
-- **Min traded-volume gate — DONE.** Added `WEATHER_MIN_VOLUME` ($500) to
-  `passes_threshold` (`weather_signals.py`). **Liquidity ≠ volume:** liquidity is $ *resting*
-  in the book (`liquidityNum`), volume is $ *actually traded* (`volumeNum`). A market can show
-  $1.4k resting while only ~$70 has ever traded (e.g. LA `72-73°F` Jun15) — those quotes are
-  likely a lone market maker that can vanish, and adverse selection is high; the static
-  order-book sim can't see that risk. $500 was chosen from the **live volume distribution** (it
-  sits in the natural $414→$756 gap), not for symmetry with the liquidity floor. Live effect:
-  actionable 19→13. **Gate-level caveat (see below):** $500/$500 are fine for *evaluation* but
-  are deliberately permissive; raise both before live/scaled trading.
-- **Second scoreboard reset (clean test of the volume-gated model).** All trades + signals
-  deleted, bankroll → $10k, counters → 0. This reset cost **nothing realized**: at reset time
-  all 28 open trades were unsettled ($0 P&L, bankroll untouched), so the scoreboard was empty —
-  but several open positions were in markets the new volume gate rejects (LA, Tokyo), so keeping
-  them would have written the *first* scoreboard rows for trades the current model wouldn't take.
-- **Mark-to-market "Now" price was stale — FIXED.** The dashboard's live price + unrealized P&L
-  read Gamma's cached `outcomePrices`, which is **badly stale on thin daily-temperature markets**
-  (observed Shanghai `22°C` NO at 0.42 when the live book was ~0.65 — a 23¢ error). Gamma's
-  `bestBid`/`bestAsk`/`lastTradePrice` were *also* stale. **Only the live CLOB `/book` is ground
-  truth.** `_fetch_outcome_prices` (`api/main.py`) now looks up the market's `clobTokenIds` and
-  marks each side at its live CLOB **mid** (`orderbook.fetch_book_top`), falling back to Gamma
-  `outcomePrices` only if the book is unavailable. (This is the same reason the signal generator
-  already walks the live book for fills — issue 7.)
-- **Entry edge screen now uses the LIVE book too — DONE.** Previously the screen read
-  `yes_price`/`no_price` from Gamma `outcomePrices` and only *candidates* got the live-book walk,
-  so a stale Gamma mid could hide a real edge and the bucket was never walked. Now the scan fetches
-  every market's **full live book up front** via the CLOB **batch `POST /books`** endpoint
-  (`orderbook.fetch_books` → `LiveBook{top, asks}`) and refreshes each market's price fields
-  (`_apply_live_top`) before the edge screen. The same pre-fetched books feed the exact-fill walk,
-  so the per-bucket pass needs **zero extra round-trips**. Performance: a naive per-token refresh
-  was ~280 requests (~50s, rate-limited); batched it's ~3 requests (~0.7s), warm-cache scan ~2.2s.
-  Effect: actionable rose ~13→~19 (real edges Gamma's stale prices were hiding). `generate_weather_signal`
-  gained `refresh_prices` (scan passes `False`, having batch-refreshed) and `books` (the pre-fetched
-  dict); standalone callers still refresh per-market via `_refresh_market_prices_live`.
-  *Aside (pre-existing, untouched):* a cold process pays ~45s once for the **sequential** Open-Meteo
-  forecast pre-warm; it's cached warm thereafter. Could be made concurrent later — separate issue.
-
-- **Scoreboard reset.** All old trades + signals deleted (they were placed by the
-  pre-gate / pre-bias / contract-count model and would pollute the test); bankroll back to
-  $10k. A check showed 9 of the old 10 trades would be rejected by the current gates.
-- **Exposure scaled up for faster data:** _(SUPERSEDED 2026-06-14 — these fixed-$ knobs are gone;
-  sizing/exposure are now FRACTIONS of the live bankroll. See "Position sizing made RELATIVE".)_
-  `WEATHER_MAX_ALLOCATION` $500→**$2,000** (~20% of
-  bankroll; covers all actionable opportunities); `DAILY_LOSS_LIMIT` $300→**$750** in step so
-  the breaker doesn't stall data collection. `MAX_TRADE_SIZE` $75 and `KELLY_FRACTION` 0.10
-  unchanged. `MAX_TRADES_PER_SCAN`=3 (hard-coded throttle; only paces the ramp).
-- **Cap display — DONE.** `/api/stats` now returns `weather_max_allocation`, `daily_loss_limit`,
-  `daily_pnl`, and `settled_trades`; `App.tsx` reads the real cap (no more hard-coded "/$500"),
-  added a **Daily-loss** status card ($ lost today / limit, red when the breaker trips), and the
-  **win rate** is now over RESOLVED trades (was divided by `total_trades`, which counts open
-  positions).
-- **International cities (Celsius) — DONE.** Seoul/Tokyo/London/HK/Paris/Shanghai are now traded
-  alongside the US markets (`WEATHER_CITIES` extended). They resolve in **°C** with **single-degree**
-  buckets ("18°C") vs the US °F **two-degree** ranges ("82-83°F"). Design principle: **no temperature
-  is ever converted** — each city has a native `unit` ("F"/"C") in `CITY_CONFIG`; the forecast is
-  fetched in that unit (`temperature_unit`), buckets are parsed in that unit, and the existing
-  ±0.5 rounding integral runs natively (0.5°C for °C). `parse_bucket_label` now reads °C/°F unit
-  letters + single-degree labels → `(N,N)` → interval `[N-0.5, N+0.5)`; this is correct for both
-  the whole-degree cities (London/Seoul/Paris/Shanghai, Wunderground) AND HK (one-decimal, HKO).
-  Settlement stations per the markets' own resolution text: London City (EGLC), Tokyo Haneda (RJTT),
-  Seoul→**Incheon** (RKSI), Paris→**Le Bourget** (LFPB), Shanghai→**Pudong** (ZSPD), HK→**HKO HQ**.
-  The σ-floor constants (defined in °F) are scaled by 1/1.8 for °C cities (exact for a temperature
-  *spread*). Polymarket settles from its own market outcome (price-based), so units never enter
-  settlement. Live check: forecasts are sane °C, bucket probs form a clean bell curve summing ~1,
-  intl books carry $2-4k liquidity vs ~$0.8k US. Tests: `tests/test_celsius_markets.py`.
-  **Still deferred:** per-station **bias** for the °C cities (cold-start 0 = no-op until the backfill
-  is run in °C — `bias_f` must be stored in the city's native unit); intraday conditioning.
-
-### Dashboard — REBUILT (weather-only, clean & spacious)
-The old dense BTC-era dashboard was replaced. Frontend components now: `ScanView` (dropdown →
-one event's bucket table + bias-corrected forecast header + Polymarket links + top-opportunities
-strip; held buckets marked "holding"), `TradesPanel` (Active/Settled dropdown; Active shows
-mark-to-market "Now" price + unrealized P&L + "Settles in"; Settled shows result/P&L/when),
-`Scoreboard` (win rate, Brier, calibration), `LiveLog` (collapsible event log). **Deleted:**
-SignalsTable, WeatherPanel, GlobeView, EdgeDistribution, MicrostructurePanel, EquityChart,
-CalibrationPanel, Terminal, FilterBar, StatsCards. `WeatherSignalResponse` + `TradeResponse`
-were extended with the fields the UI needs (slug, bucket_label, low/high_f, net_edge,
-entry_price, cost, rel_spread, liquidity, bias, current_price, unrealized_pnl, city/metric/
-target_date, settlement_time). `Trade` gained a `bucket_label` column (+ a one-off
-`backend/data/backfill_trade_buckets.py` to fill old rows).
-
-### Other recent fixes (post-Phase-6)
-- **Settlement never fired (resolved trades stuck "active") — FIXED.** Two bugs in
-  `settlement.py`: (1) it graded against `markets[0]` of the event instead of the specific
-  bucket we hold (`market_id`), and (2) it required Polymarket's `closed` flag, but
-  daily-temperature events stay `closed: false` for hours/days after the day's high/low is
-  fixed — the outcome shows only as the price going to the rails (~0.9995/0.0005). Now it
-  matches the exact bucket by id and settles when EITHER `closed` is true OR the target local
-  day is over AND the price is decisive (>0.99/<0.01). Bankroll/win-rate/scoreboard update via
-  the existing settlement job once settled.
-- **P&L = cash-staked** (see issue 6 sizing note): loss = full stake (`-size`), win = net odds
-  (`size*(1-p)/p`). Old settled trades were re-graded. Tests: `tests/test_pnl.py`.
-- **Trade loop no longer freezes:** it used `actionable[:3]` then skipped held markets, so once
-  the top-3 by edge were all held it placed nothing and never reached the rest. Now it scans the
-  whole actionable list and places up to `MAX_TRADES_PER_SCAN` *new* (non-held) trades.
-- **Signal persistence deduped:** one row per market per UTC day (was a new row every 5-min scan
-  ≈ 22k/day); the row updates in place, then freezes once executed.
-- **Timezone display:** backend logs/timestamps are UTC without a 'Z'; the frontend now tags
-  tz-less timestamps as UTC (`asUtc` in `LiveLog`/`TradesPanel`) so the live log + settled
-  "X ago" render in local time.
-- **"Actionable now" excludes held markets** (headline count, opportunities strip, dropdown count).
-- **Mark-to-market:** open positions show the live side price + unrealized P&L (`_current_side_prices`
-  in `api/main.py`, 30s server-side cache).
-
-## Key bugs / known issues
-
-1. **Scoreboard label mismatch (LINCHPIN, Phase 2) — FIXED.** Weather signals store
-   `direction = "yes"/"no"`; settlement used to build `actual_outcome = "up"/"down"` and
-   grade `outcome_correct = (signal.direction == actual_outcome)`, so `"yes" == "up"` was
-   always False and **every weather prediction graded wrong**. Fixed by translating at the
-   settlement step: `grade_signal_outcome(direction, settlement_value)` in
-   `backend/core/settlement.py` is vocabulary-agnostic ("yes"/"up" = first outcome,
-   "no"/"down" = second) and returns `(actual_outcome, outcome_correct)` in the signal's own
-   vocab. Regression test: `tests/test_settlement_grading.py` (run with repo root on
-   `PYTHONPATH`; pytest not installed, file is also runnable as a script). Brier score was
-   always correct (numeric `model_probability` vs `settlement_value`); `calculate_pnl` was
-   never affected. Note: at fix time the DB held only legacy BTC data and zero weather
-   signals, so no retroactive re-grading was needed.
-
-2. **Polymarket weather fetch finds 0 markets (Phase 3, market-reading) — FIXED.**
-   `weather_markets.py` was rebuilt: it now queries Gamma with `tag_slug=daily-temperature`
-   (the old `tag`/`slug_contains` params were silently ignored → 0 markets), paginates past
-   the 100-event page cap, derives city/metric/date from the **event slug** (robust, explicit
-   year), parses each bucket's `groupItemTitle` into a numeric range, and **skips** anything it
-   can't read cleanly. Markets are modelled as range buckets (`low_f`/`high_f`, open-ended tails)
-   and scored by `EnsembleForecast.probability_high/low_in_range` (rounding-aware: bucket [82,83]
-   = raw [81.5,83.5)). `WeatherMarket.threshold_f`/`direction` are compat properties so the API
-   /frontend contract is unchanged. Verified: 85 markets / 85 signals via the live API.
-
-3. **Wrong location/station (Phase 3) — FIXED.** `CITY_CONFIG` (`backend/data/weather.py`) now
-   points each city's lat/lon at the **settlement station** (not city centre): NYC = LaGuardia
-   (KLGA, was Central Park), Denver = Buckley SFB (KBKF, was Denver Intl), and Chicago/Miami/LA
-   were moved from downtown to their airports (KORD/KMIA/KLAX) — airport vs downtown can differ
-   several degrees (esp. coastal LAX). Unused `nws_office`/`nws_gridpoint` fields removed. NWS
-   observed-temp stays unused for Polymarket settlement (it resolves from its own market outcome),
-   so station only affects the forecast. Kalshi may settle on *different* stations — verify before
-   enabling it.
-
-4. **UTC vs local day (Phase 3) — FIXED.** The Open-Meteo ensemble request now passes
-   `timezone=auto`, so the daily high/low is aggregated over the station's local calendar day
-   (the day markets settle on) rather than a UTC day.
-
-5. **Overconfident forecast (Phase 4) — core FIXED.** Bucket probability now comes from a
-   fitted Normal over the ensemble mean/spread, integrated across the bucket's rounding
-   interval (`EnsembleForecast._fitted_bucket_prob` / `probability_high|low_in_range`). The
-   spread is **widened** (`sigma_eff = max(sigma*INFLATION, FLOOR) + lead_days*PER_LEAD_DAY`,
-   config knobs `WEATHER_SIGMA_*`) because the GFS ensemble is under-dispersed. Effect: live
-   median |edge| fell to ~1% and max from ~95% → ~36%; a unanimous ensemble no longer implies
-   100%. Tests: `tests/test_forecast_distribution.py`. Per-station **bias correction is now
-   done** (issue 11). **Still deferred:** climatology blend — at 0–1 day lead it adds little.
-   `_fraction_in_range` is kept as a raw reference but is no longer the traded probability.
-
-6. **No fees anywhere (Phase 6) — FIXED.** The dominant Polymarket cost is the bid/ask
-   spread, so the signal now enters at the effective **ask** (`mid + spread/2`, live spread
-   captured into `WeatherMarket.spread`) and gates/sizes on **net edge** (`gross − spread/2 −
-   fee`); `passes_threshold` also enforces the entry-price cap. P&L is net of fees: a `fee`
-   column was added to `Trade` (migrated in `ensure_schema`, which now logs failures loudly)
-   and `calculate_pnl` subtracts it (spread is already in `entry_price`). Config knobs:
-   `WEATHER_DEFAULT_SPREAD`, `WEATHER_FEE_RATE` (0 for Polymarket; set for Kalshi). Kelly
-   fraction lowered 0.25→0.10 (honest probs need less aggression). The daily-loss circuit
-   breaker now guards the weather job too (was crypto-only). Wide-spread illiquid buckets are
-   correctly filtered (e.g. a +30% gross edge can drop below 8% net). Tests:
-   `tests/test_weather_signal_costs.py`.
-   **Sizing convention (fixed):** `Trade.size` is the CASH staked. `calculate_pnl` now
-   pays the prediction-market net odds on a win (`size*(1-p)/p`) and loses the full stake
-   on a loss (`-size`) — consistent with the Kelly cash fraction and the $500 exposure cap.
-   (It previously treated `size` as a contract count, so a loss was only `size*p`; existing
-   settled trades were re-graded.) Tests: `tests/test_pnl.py`.
-
-7. **Liquidity/slippage + sizing realism (Phase 7+, Layer 1) — FIXED.** The reader now
-   captures `liquidity` (Gamma `liquidityNum`) and live `best_bid`/`best_ask`; signals enter
-   at the **real ask** when the book is present. Two new gates in `passes_threshold` reject
-   mirage edges: a minimum liquidity (`WEATHER_MIN_LIQUIDITY`, $500) and a maximum **relative**
-   spread (`WEATHER_MAX_REL_SPREAD`, 10% — a 2¢ spread on a 4¢ contract is a 50% mirage even
-   though 2¢ "looks" tiny). Trade size is capped to a fraction of the book
-   (`WEATHER_MAX_BOOK_FRACTION`, 10%) so we don't pretend to fill $75 into a $200 market. Live
-   check: actionable fell from ~22 to ~8–10; the large edges that survive are on liquid,
-   tight-spread markets (→ that's forecast **bias**, the next lever, not liquidity). Tests
-   extended in `tests/test_weather_signal_costs.py`.
-   **Exact order-book fills (Layer 2(ii) + Layer 3) — NOW DONE.** Instead of assuming we
-   fill the whole order at the top-of-book ask, candidate signals now WALK THE REAL CLOB
-   ORDER BOOK and pay the exact VWAP across consumed levels — no modelled slippage curve,
-   the actual fill against the book as quoted. `backend/data/orderbook.py`
-   (`fetch_ask_levels` + `walk_asks_for_cash` + `simulate_market_buy`) fetches a token's book
-   from `https://clob.polymarket.com/book` and consumes asks cheapest-first for the Kelly cash
-   amount; `WeatherMarket` now carries `token_id_yes`/`token_id_no` (parsed from Gamma
-   `clobTokenIds`), and `generate_weather_signal` replaces the estimated entry with the VWAP,
-   recomputing `cost = (vwap − side_mid) + fee` and `net_edge`. Effect is dramatic on thin
-   buckets: a 6¢ best ask can fill at a ~19–35¢ VWAP, so many top-of-book "edges" correctly
-   collapse below threshold (live actionable dropped to ~4–5). **Platform-generic by design:**
-   it keys off `clobTokenIds` + the live book, entirely in price/cash space (no city or °F/°C
-   coupling), so it works for ANY Polymarket market we scan later (more-liquid US or
-   international) — liquid books fill near the best ask with ~0 slippage; thin books slip. Only
-   CANDIDATES are walked (walking can only lower edge, so sub-threshold buckets are skipped),
-   and the scan shares ONE pooled HTTP client and runs concurrently — without that a fresh
-   client per bucket was ~16s/scan; now ~1.5s. Tests: `tests/test_orderbook.py`. **Still
-   deferred:** the NO side uses its own (mirror) book directly; Kalshi has no `clobTokenIds`
-   so it still falls back to the spread estimate (needs its own book walker when enabled).
-8. **Kelly sized off a constant bankroll — FIXED.** `generate_weather_signal` now takes the
-   **live** bankroll (read from `BotState` in `scan_for_weather_signals`, fallback
-   `INITIAL_BANKROLL`), so bets shrink after losses instead of always sizing off $10k.
-9. **Allocation cap hard-coded & overshooting — FIXED.** Moved to `config.WEATHER_MAX_ALLOCATION`
-   ($500) and enforced as a **hard per-trade ceiling** (trim to remaining room; stop when
-   <`MIN_TRADE_SIZE`), so open weather exposure no longer blows past to ~$600.
-10. **Cost-aware economics now persisted — DONE.** `Signal` gained `net_edge`, `entry_price`,
-   `cost`, `rel_spread`, `liquidity` (migrated in `ensure_schema`), so the scoreboard can prove
-   an edge NET of cost and the dashboard (Q8) has the fields it needs.
-11. **Per-station bias correction — DONE (historical backfill, no sim needed).** Raw GFS has
-   repeatable per-station offsets the market has already priced in (measured: NYC & LA run
-   ~1.2F cold on overnight lows, Chicago/LA ~0.9F warm on highs). `backend/data/bias_backfill.py`
-   pulls forecast (historical-forecast-api, GFS) vs actual (archive-api, ERA5) over a 60-day
-   window and writes `backend/data/station_bias.json`; `weather.get_station_bias()` reads it and
-   `EnsembleForecast.corrected_mean()` SUBTRACTS the bias before pricing buckets. Gated by
-   `WEATHER_BIAS_ENABLED` / `_MIN_SAMPLES` (10) / `_MAX_SHIFT_F` (4F clamp); zero bias = cold-start
-   no-op. Re-run the script periodically (or wire a job) to refresh. Tests:
-   `tests/test_bias_correction.py`. **Deferred refinement:** a live verification loop against the
-   official settlement station (NWS) to refine the archive-derived prior — `fetch_nws_observed_temperature`
-   is its data source (do not delete).
-
-### Minor cleanup (catch along the way)
-- `database.py ensure_schema()` swallows schema-migration errors silently — make it log
-  loudly (matters when adding the fee column in Phase 6). **(done)**
 - Date parser assumes current year when a title omits it — wrong-year risk near New Year.
-- Weather exposure cap ($500) is hard-coded in the scheduler, not in config — move it.
-  **(done — now `config.WEATHER_MAX_ALLOCATION_FRACTION`, a fraction of the live bankroll,
-  enforced per-trade; see "Latest session" / "Position sizing made RELATIVE")**
-- Dead weight: unused `ScanLog` table + the uncalled Groq/AI hook **(REMOVED 2026-06-14 — `backend/ai/`
-  and the `AILog`/`ScanLog`/`BtcPriceSnapshot` tables are deleted; see "Latest session" above)**. NOTE:
-  the "unused observed-temp function" (`fetch_nws_observed_temperature`) is NOT dead weight — keep it;
-  it's the data source for the deferred per-station **bias correction** (forecast vs. actual).
-- Verify the Kalshi base URL in `kalshi_client.py` is current (lower priority; Kalshi is
-  region-blocked).
-
-## Keep / Fix / Rebuild (per file)
-
-- **Keep:** `kalshi_client.py`, `database.py` (+fee col), `scheduler.py` (-BTC, fix
-  weather loss-stop), `api/main.py`, `config.py` (-BTC, +model/fee settings).
-- **Fix:** `kalshi_markets.py` (ranges + structured fields), `weather_signals.py`
-  (re-wire to new probability source).
-- **Done (Phase 1):** `calculate_edge` & `calculate_kelly_size` now live in
-  `core/sizing.py`; `core/signals.py` deleted.
-- **Rebuild:** `data/weather.py` (multi-model, calibrated, station-correct),
-  `data/weather_markets.py` (robust range handling).
-- **Deleted (Phase 1):** `crypto.py`, `btc_markets.py`, `markets.py`.
-- **Frontend: REBUILT** (no longer "display only / keep as-is"). See the "Dashboard — REBUILT"
-  note above for the current components and the 10 deleted ones.
+- Control endpoints (`/api/bot/*`, `/api/run-scan`, `/api/settle-trades`) unauthenticated — gate
+  before any non-local deploy.
+- Kalshi is NOT a drop-in (US-only cities, different stations, own parser/auth/fees) — deferred.
+- Orphaned legacy tables (`ai_logs`/`scan_logs`/`btc_price_snapshots`) still exist — drop them.
 
 ## Architecture quick map
 
@@ -777,14 +116,14 @@ target_date, settlement_time). `Trade` gained a `bucket_label` column (+ a one-o
 - `backend/core/sizing.py` — shared `calculate_edge` / `calculate_kelly_size`.
 - `backend/core/weather_signals.py` — weather signal generation (forecast → edge → Kelly).
 - `backend/core/settlement.py` — routes settlement by `market_type`; grades P&L + calibration.
-- `backend/data/weather.py` — Open-Meteo ensemble + NWS observations + `CITY_CONFIG`.
+- `backend/data/weather.py` — Open-Meteo ensemble + obs + `CITY_CONFIG` + intraday/bias loaders.
 - `backend/data/weather_markets.py` — Polymarket weather market fetcher/parser.
-- `backend/data/kalshi_markets.py` / `kalshi_client.py` — Kalshi fetch + RSA-PSS auth.
-- `backend/models/database.py` — SQLAlchemy models (`Trade`, `Signal`, `BotState` only; the
-  BTC/AI tables `AILog`/`ScanLog`/`BtcPriceSnapshot` were removed 2026-06-14).
+- `backend/data/orderbook.py` — live CLOB book fetch + VWAP fill walk.
+- `backend/data/kalshi_markets.py` / `kalshi_client.py` — Kalshi (deferred).
+- `backend/models/database.py` — SQLAlchemy models (`Trade`, `Signal`, `BotState`).
 
 ## Working agreement
 
-Propose one change at a time, explain it in plain English, keep the bot running after
-each step, and re-read the scoreboard. The honest finish line is **"the scoreboard says
-it beats the price, net of fees"** — not "it runs".
+One change at a time, explained in plain English, keep the bot running, re-read the scoreboard
+after each. Answers stay concise (see memory). The honest finish line is **"the scoreboard says it
+beats the price, net of fees"** — not "it runs".
