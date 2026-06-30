@@ -31,6 +31,10 @@ safeguard exists to only bet when we genuinely know something:
 6. **Observed-so-far floor/ceiling** — once the day's extreme has actually occurred, don't price
    the final high below (or low above) what's already on the thermometer; plus an intraday-σ
    schedule + observed-anchored pricing center so confidence tracks reality through the day.
+7. **Post-extreme gate** (`WEATHER_REQUIRE_EXTREME_IN`) — only act once the day's extreme is
+   actually in (observed floor/ceiling active: high ≥16h, low ≥10h local). Never bet day-ahead or
+   pre-extreme, where the forecast σ is too flat to beat the market. Doubles as the safety gate
+   that, with the maker leg off, stops day-ahead buckets from being taken.
 
 ## Hard constraints (do not violate)
 
@@ -43,31 +47,34 @@ safeguard exists to only bet when we genuinely know something:
   weather path imports them.
 - **`.env` overrides `config.py`** (pydantic-settings). Any config change must check `.env` first.
 
-## Current state (2026-06-30)
+## Current state (2026-06-30) — Edge-2 live test
 
-Live 24/7 on the server, simulation only, GFS+ECMWF+ICON blend deployed (σ-inflation 2.04).
+Live 24/7 on the server, simulation only, GFS+ECMWF+ICON blend. **Now running the Edge-2 live
+test**: the one OOS-robust seam the backtests found — the same-day inland afternoon nowcast
+(`backend/data/edge2_backtest.py`; memory `edge2-live-test-config` / `edge2-inland-afternoon-seam`).
 
-**A full quant audit (2026-06-29, `AUDIT_2026-06-29.md`) concluded the bot has no edge as deployed
-and is losing** (active book −$924/27 settled). Root cause: the day-ahead probability distribution
-is 3–4× flatter than the market's, so the bot bets NO against the bucket the market correctly
-favours. The earlier "at parity" reading was a backtest artifact (in-sample σ + look-ahead + an
-Asia timezone leak). One real seam exists: the forecast *center* beats the market inland (Chicago
-OOS) — the over-wide σ is smearing it away.
+**Deployed config for the test (in `config.py` defaults unless noted):**
+- **Cities = `denver,chicago` only** — the Brier-confirmed H≥16 post-high cells. Coastal
+  (`tokyo/paris/hong_kong`) + `nyc` PARKED (their backtest "profit" was a variance/Asia-leak
+  fluke). All parked/cut cities stay in `CITY_CONFIG` so open positions still settle.
+- **Same-day TAKER only** — day-ahead maker leg RETIRED (`WEATHER_MAKER_ENABLED=False`); reverts to
+  the byte-identical taker path, no maker_poll job. Dashboard maker panel removed.
+- **Post-extreme gate** (`WEATHER_REQUIRE_EXTREME_IN`, safeguard 7) — only trade once the day's
+  extreme is in; also blocks day-ahead taker (the losing too-flat-σ regime).
+- **Scoreboard soft-reset** (`SCOREBOARD_EPOCH` in `.env`, the one operational override) — headline
+  P&L / win-rate / calibration count only post-reset trades; history kept, open positions settle;
+  sizing still off the true bankroll.
 
-**Direction (set 2026-06-30):**
-- **Pursue a SAME-DAY taker edge.** Same-day books are deep and fill instantly; the catastrophic
-  too-flat-σ problem is a *day-ahead* phenomenon (same-day uses the honest intraday curve). Edge is
-  a nowcasting problem: observed-so-far + empirical intraday drift vs the market price.
-- **Park the day-ahead maker leg.** Maker orders barely fill (~3.7% in sim; they expire before the
-  extreme forms). Not relying the strategy on whether they fill.
-- **Near-term goal = trade evenly with the market (parity) first**, then push for edge. Profitable
-  PM weather bots are proven possible — the edge is a given; the question is HOW, not WHETHER.
-- Judge on **Brier per slice (bootstrap CI)**, not P&L (too noisy at this scale).
+Background: the 2026-06-29 audit (`AUDIT_2026-06-29.md`) found the broad as-deployed bot had **no
+edge** (active −$924/27). The day-ahead distribution is 3–4× flatter than the market's → fake NO
+bets; "parity" was an in-sample-σ + look-ahead + Asia-leak artifact. The one real seam is the
+inland same-day post-high nowcast — which is exactly what this test now isolates.
 
-Open audit fixes worth doing regardless (full list in `AUDIT_2026-06-29.md` §1): kill the
-NO-on-modal trade + tighten the market-gap guardrail; add a trailing-drawdown halt; calibrate
-probability (isotonic/Platt); point-in-time storage; a real event-driven P&L backtest; lock down
-the unauthenticated control endpoints; fix the taker/maker double-book and UTC settlement clock.
+**Judge on Brier per slice (bootstrap CI), not P&L** (too noisy at this scale). The decisive
+go/no-go before trusting any P&L is still an **OOS lead-correct-forecast backtest** (kills vintage
+look-ahead) + real-book fill realism — run that offline in parallel; the live test is the slow
+forward shadow. Other open audit fixes in `AUDIT_2026-06-29.md` §1 (NO-on-modal, drawdown halt,
+isotonic calibration, point-in-time storage, auth on control endpoints, UTC settlement clock).
 
 ## Phase order
 
@@ -97,8 +104,9 @@ optional arb scanner · 9 gated go-live.
   `WEATHER_MAX_ALLOCATION_FRACTION` 0.20, `WEATHER_MAX_CITY_DAY_FRACTION` 0.07, daily-loss 0.15.
 - **Settlement** — matches the exact bucket by id; settles when closed OR local day over + price
   decisive.
-- **Cities** — 6 active (`nyc, chicago, denver, tokyo, paris, hong_kong`); LA/shanghai cut
-  (un-resolvable stations). Cut cities stay in `CITY_CONFIG` so open positions still settle.
+- **Cities** — Edge-2 test: **2 active (`denver, chicago`)**; `nyc` + coastal (`tokyo, paris,
+  hong_kong`) parked, LA/shanghai cut (un-resolvable stations). All parked/cut cities stay in
+  `CITY_CONFIG` so open positions still settle.
 - **°C cities** — native unit throughout, no conversion; σ-floor constants scaled 1/1.8 for °C.
 
 ## Known open / deferred

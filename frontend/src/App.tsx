@@ -3,7 +3,6 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { fetchDashboard, runScan, startBot, stopBot } from './api'
 import { ScanView } from './components/ScanView'
 import { TradesPanel } from './components/TradesPanel'
-import { WorkingOrders } from './components/WorkingOrders'
 import { Scoreboard } from './components/Scoreboard'
 import { LiveLog } from './components/LiveLog'
 
@@ -51,7 +50,6 @@ function App() {
   const recentTrades = data?.recent_trades ?? []
   const calibration = data?.calibration ?? null
   const biasSegments = data?.bias_segments ?? []
-  const workingOrders = data?.working_orders ?? []
   const scoreboardEpoch = data?.scoreboard_epoch ?? null
   const stats = data?.stats ?? {
     is_running: false, last_run: null, total_trades: 0, total_pnl: 0,
@@ -66,14 +64,9 @@ function App() {
   const breakerHit = dailyLossUsed >= dailyLossLimit
 
   const openTrades = recentTrades.filter(t => !t.settled)
-  // Committed weather allocation = open positions' cash PLUS resting day-ahead maker orders'
-  // cash. The bot's allocation cap counts BOTH (_committed_and_counts), so the dashboard must
-  // too — otherwise it understates how full the allocation is (e.g. shows ~half-full while the
-  // bot is actually capped out and placing nothing new).
-  const restingCash = workingOrders
-    .filter(o => o.status === 'OPEN' || o.status === 'PARTIALLY_FILLED')
-    .reduce((a, o) => a + (o.intended_cash || 0), 0)
-  const openExposure = openTrades.reduce((a, t) => a + (t.size || 0), 0) + restingCash
+  // Same-day taker only: committed weather allocation = open positions' cash. (The day-ahead
+  // maker leg is retired, so there are no resting orders to count.)
+  const openExposure = openTrades.reduce((a, t) => a + (t.size || 0), 0)
   // Map of market_id -> open position, so the scan view can mark buckets we hold.
   const heldByMarket = openTrades.reduce((m, t) => {
     m[t.market_ticker] = { direction: t.direction, entry_price: t.entry_price }
@@ -149,7 +142,7 @@ function App() {
           <StatCard label="Bankroll" value={`$${stats.bankroll.toLocaleString(undefined, { maximumFractionDigits: 0 })}`} />
           <StatCard label="Total P&L" value={`${stats.total_pnl >= 0 ? '+' : ''}$${stats.total_pnl.toFixed(0)}`} tone={stats.total_pnl >= 0 ? 'pos' : 'neg'} />
           <StatCard label="Win rate" value={`${winRatePct.toFixed(0)}%`} sub={`${stats.winning_trades}/${stats.settled_trades ?? 0} settled`} />
-          <StatCard label="Open positions" value={`${openTrades.length}`} sub={`$${openExposure.toFixed(0)} / $${allocationCap.toLocaleString(undefined, { maximumFractionDigits: 0 })} cap${restingCash > 0 ? ` · incl $${restingCash.toFixed(0)} resting` : ''}`} />
+          <StatCard label="Open positions" value={`${openTrades.length}`} sub={`$${openExposure.toFixed(0)} / $${allocationCap.toLocaleString(undefined, { maximumFractionDigits: 0 })} cap`} />
           <StatCard
             label="Daily loss"
             value={`$${dailyLossUsed.toFixed(0)} / $${dailyLossLimit.toLocaleString(undefined, { maximumFractionDigits: 0 })}`}
@@ -171,9 +164,6 @@ function App() {
             <TradesPanel trades={recentTrades} />
           </div>
         </section>
-
-        {/* ===== Resting maker orders ===== */}
-        <WorkingOrders orders={workingOrders} />
 
         {/* ===== Scoreboard & calibration ===== */}
         <Scoreboard calibration={calibration} biasSegments={biasSegments} epoch={scoreboardEpoch} />

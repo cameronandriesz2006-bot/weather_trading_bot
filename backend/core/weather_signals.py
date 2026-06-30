@@ -61,6 +61,17 @@ class WeatherTradingSignal:
     market_gap: Optional[float] = None
     market_gap_threshold: Optional[float] = None
 
+    # Post-extreme gate (Edge-2): True once the day's observed extreme is in (the bot had an
+    # observed floor/ceiling to anchor on). False for day-ahead and pre-extreme same-day —
+    # exactly the regimes that lose OOS. Gated by WEATHER_REQUIRE_EXTREME_IN.
+    extreme_in: bool = False
+
+    @property
+    def post_extreme_ok(self) -> bool:
+        """When the post-extreme gate is on, only trade once the day's extreme is in
+        (observed-anchored nowcast — the only OOS-robust edge). Off => always True."""
+        return (not settings.WEATHER_REQUIRE_EXTREME_IN) or self.extreme_in
+
     @property
     def market_gap_ok(self) -> bool:
         """True if our pricing center is close enough to the market-implied mean to
@@ -88,6 +99,7 @@ class WeatherTradingSignal:
             and self.market.volume >= settings.WEATHER_MIN_VOLUME
             and self.rel_spread <= settings.WEATHER_MAX_REL_SPREAD
             and self.market_gap_ok
+            and self.post_extreme_ok
         )
 
 
@@ -382,6 +394,13 @@ async def generate_weather_signal(
         market_gap = abs(corrected_mean_val - market.event_market_mean)
     market_gap_ok = market_gap is None or market_gap <= gap_threshold
 
+    # Post-extreme gate: the observed extreme is in iff we got a non-None observed_bound
+    # (false for any future/day-ahead date and for same-day before the set-hour). This is
+    # the only OOS-robust regime and, with the maker leg off, the guard that keeps day-ahead
+    # buckets from being taken.
+    extreme_in = observed_bound is not None
+    post_extreme_ok = (not settings.WEATHER_REQUIRE_EXTREME_IN) or extreme_in
+
     # Build reasoning — mirror passes_threshold exactly so the recorded note
     # explains precisely why a bucket was or wasn't actionable.
     actionable = (net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
@@ -389,8 +408,12 @@ async def generate_weather_signal(
                   and market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
                   and market.volume >= settings.WEATHER_MIN_VOLUME
                   and rel_spread <= settings.WEATHER_MAX_REL_SPREAD
-                  and market_gap_ok)
+                  and market_gap_ok
+                  and post_extreme_ok)
     filter_notes = []
+    if not post_extreme_ok:
+        filter_notes.append("extreme not in yet (day-ahead/pre-high)" if local_hour is None
+                            else f"extreme not in yet @{local_hour}h local")
     if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
         filter_notes.append(f"entry {entry_price:.0%} > {settings.WEATHER_MAX_ENTRY_PRICE:.0%}")
     if net_edge < settings.WEATHER_MIN_EDGE_THRESHOLD:
@@ -444,6 +467,7 @@ async def generate_weather_signal(
         ensemble_members=forecast.num_members,
         market_gap=market_gap,
         market_gap_threshold=gap_threshold,
+        extreme_in=extreme_in,
     )
 
 

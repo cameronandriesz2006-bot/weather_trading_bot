@@ -328,8 +328,13 @@ async def get_stats(db: Session = Depends(get_db)):
     # record (matching the scoreboard/cohort tables, which are already active-only). The bot still
     # SIZES off the real account, so the allocation / daily-loss CAPS below stay relative to the
     # true capital (state.bankroll). Bankroll = starting capital + active-city realized P&L.
+    # Honor the scoreboard epoch too (same as the cohort/calibration tables): after a soft reset
+    # the headline P&L / win-rate count only trades entered at/after the epoch, so the whole
+    # dashboard reads as one clean post-reset record. Pre-epoch trades stay in the DB.
+    epoch = _scoreboard_epoch()
     settled = [t for t in db.query(Trade).filter(Trade.settled == True).all()
-               if _is_active_weather(t.event_slug)]
+               if _is_active_weather(t.event_slug)
+               and (epoch is None or (t.timestamp is not None and t.timestamp >= epoch))]
     settled_trades = len(settled)
     winning_trades = sum(1 for t in settled if t.result == "win")
     win_rate = (winning_trades / settled_trades) if settled_trades else 0

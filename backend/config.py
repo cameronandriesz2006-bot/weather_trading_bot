@@ -86,7 +86,11 @@ class Settings(BaseSettings):
     # Tokyo/Paris (parity; Paris +0.017 is borderline-parity, kept on watch). Same mechanism as
     # above: PARKED not deleted — they stay in CITY_CONFIG so positions settle + history is
     # preserved, and it's reversible. The maker wiring (next) trades exactly these 6.
-    WEATHER_CITIES: str = "nyc,chicago,denver,tokyo,paris,hong_kong"
+    # NARROWED 2026-06-30 to the Edge-2 live test: only denver+chicago, the Brier-confirmed
+    # same-day afternoon (H>=16, post-high) nowcast cells. Coastal (tokyo/paris/hong_kong) + nyc
+    # PARKED (their backtest profit was a variance/Asia-leak fluke); all stay in CITY_CONFIG so
+    # open positions still settle. See edge2_backtest.py / memory edge2-live-test-config.
+    WEATHER_CITIES: str = "denver,chicago"
 
     # Trading costs (Phase 6) — "profit" must mean profit net of costs.
     # On Polymarket the dominant cost is the bid/ask spread (the live market
@@ -140,7 +144,11 @@ class Settings(BaseSettings):
     # GATED OFF by default: when False the scan uses the existing TAKER path BYTE-IDENTICALLY.
     # ENABLED 2026-06-28 (simulated — SIMULATION_MODE still True, so these are sim orders against
     # the real tape, no real money). Flip back to False to instantly revert to the taker path.
-    WEATHER_MAKER_ENABLED: bool = True
+    # RETIRED 2026-06-30 (-> False) for the Edge-2 same-day-TAKER live test: the day-ahead maker
+    # leg's fill rate was never proven, and the only OOS-robust edge is same-day post-high (taken
+    # at the ask). Flip True to revive the hybrid maker/taker routing. See memory
+    # maker-live-status-open-questions / edge2-live-test-config.
+    WEATHER_MAKER_ENABLED: bool = False
     # How long a posted order rests before auto-cancel (GTD; Polymarket adds a 1-min security
     # threshold on top). Day-ahead orders rest for HOURS to catch the day's flow.
     WEATHER_MAKER_TTL_SECONDS: int = 21600     # 6h
@@ -149,6 +157,17 @@ class Settings(BaseSettings):
     # Tick used to improve the bid by one step when posting (Polymarket rounds to a valid tick
     # on submit; 0.01 is the common weather-market tick).
     WEATHER_MAKER_TICK: float = 0.01
+
+    # --- Post-extreme (same-day afternoon) gate (Edge-2 strategy, 2026-06-30) -----
+    # The ONLY edge that survives out-of-sample is the same-day NOWCAST: once the day's
+    # extreme is actually in (observed floor/ceiling active), our observed-anchored price
+    # beats a slightly-slow market (denver/chicago, H>=16). Day-ahead and morning same-day
+    # both LOSE (forecast σ too flat). When True, a signal is actionable ONLY if the
+    # observed extreme is in (``observed_bound is not None`` — false for any future day and
+    # for same-day before the set-hour), so the bot never takes a day-ahead or pre-extreme
+    # bucket. This is ALSO the safety gate that, with WEATHER_MAKER_ENABLED off, stops
+    # day-ahead signals from falling through to the taker path. Flip False to revert.
+    WEATHER_REQUIRE_EXTREME_IN: bool = True
 
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the
