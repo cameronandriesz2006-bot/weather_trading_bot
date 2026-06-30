@@ -1,0 +1,74 @@
+cities=['chicago', 'denver', 'hong_kong', 'nyc', 'paris', 'tokyo']
+hours(local)=[7, 10, 13, 16, 18, 20]  months=[5, 6, 7, 8, 9]  cent-thresholds=[2, 5, 10]
+368 cleanly-resolved in-scope events across 6 cities (chicago:32, denver:43, hong_kong:76, nyc:69, paris:71, tokyo:77)
+
+======================================================================================
+A. PROVIDER-MATCH VALIDATION (obs source vs Polymarket settlement)
+   per city: events with full-day obs; agree=obs-extreme lands in winner bucket;
+   FALSE-IMPOSSIBLE=obs would have wrongly marked the WINNER impossible (edge-killer)
+======================================================================================
+  city            n   agree  adjacent  FALSE-IMP mean|gap|
+  chicago        32   100%         0    0 (  0%)    0.00F
+  denver         43    95%         2    1 (  2%)    0.34F   <-- obs UNRELIABLE for impossible-calls
+  hong_kong      76    25%        45   25 ( 33%)    0.75C   <-- obs UNRELIABLE for impossible-calls
+  nyc            69    99%         1    0 (  0%)    0.94F
+  paris          71    87%         7    2 (  3%)    0.74C   <-- obs UNRELIABLE for impossible-calls
+  tokyo          77    91%         7    0 (  0%)    0.50C
+  (agree should be ~100% and FALSE-IMP ~0% for the edge to be real; a non-zero
+   FALSE-IMP means our thermometer reads hotter/colder than the settlement source.)
+
+======================================================================================
+B. FREE-MONEY DURABILITY: 872 distinct impossible buckets (trusted cities only)
+   YES price at a LAG after the impossibility crossing (tol +-45min; quote must post AFTER crossing)
+======================================================================================
+  fetching price history for 872 impossible tokens...
+
+  decay of the mispricing after a bucket goes impossible:
+    lag  n_quotes >= 2c >= 5c >=10c avg_c(>=2c)
+    +0h       872  184  138  106        22.5
+    +1h       872    3    2    1        10.1
+    +2h       853    0    0    0         0.0
+    +3h       811    0    0    0         0.0
+  (+0h = the crossing instant, mostly the transient spike; +1h = earliest we'd
+   realistically have the ob and could act; +2h/+3h = genuinely durable mispricing.)
+
+  when buckets become impossible (local hour of crossing) — early = more time to act:
+     0:00   372  ########################################
+     1:00    19  ##
+     2:00    22  ##
+     3:00    19  ##
+     4:00    27  ##
+     5:00     8  
+     6:00    13  #
+     7:00    20  ##
+     8:00    37  ###
+     9:00    56  ######
+    10:00    58  ######
+    11:00    60  ######
+    12:00    45  ####
+    13:00    34  ###
+    14:00    33  ###
+    15:00    19  ##
+    16:00     7  
+    17:00     4  
+    20:00     6  
+    21:00     3  
+    22:00     4  
+    23:00     6  
+
+  CAPTURABLE rows (still >= 2c a full hour AFTER going impossible):
+    chicago      count=  1  total_locked_cents=    21
+    tokyo        count=  2  total_locked_cents=     9
+    top:
+      2026-06-17 chicago    high cross=23:00 '68-69°F       ' YES@+1h= 21.2c
+      2026-05-25 tokyo      low  cross= 1:00 '19°C          ' YES@+1h=  7.0c
+      2026-05-25 tokyo      high cross=12:00 '24°C          ' YES@+1h=  2.2c
+
+======================================================================================
+C. LIVE DEPTH PROBE — open markets, impossible RIGHT NOW, real NO-book depth
+======================================================================================
+  11 impossible buckets live; walking the NO book for up to $200 each:
+  city       metric bucket            obs  NO_ask  $takeable  NO_vwap  profit$
+  tokyo      high  27°C              28C    0.01       200    0.213    738.4
+
+  total takeable locked profit across open impossible buckets (<= $200 each): $738

@@ -1,0 +1,18 @@
+984 impossible buckets (trusted cities, months [5, 6, 7, 8, 9])
+
+buckets with a usable price path: 967; never repriced to <=2c by EOD: 0
+
+minutes the YES stayed >=10c AFTER the hourly crossing mark (lead window):
+  n=153  p25=2  median=39  p75=52  max=56
+reprice sharpness (min from last>=10c to <=2c):
+  n=153  p25=1  median=2  p75=16
+time from crossing mark to YES<=2c (door fully shut):
+  n=967  p25=0  median=0  p75=54
+
+YES price a fixed lag after the hourly crossing mark (NWS-feed-latency proxy):
+  +15min:  n= 773  mean=  5.0c  median=  0.1c  share>=5c=15.3%
+  +30min:  n= 770  mean=  4.9c  median=  0.1c  share>=5c=14.0%
+  +45min:  n= 773  mean=  4.0c  median=  0.1c  share>=5c=13.1%
+  +60min:  n= 780  mean=  0.1c  median=  0.1c  share>=5c= 0.0%
+
+capturable proxy (still >=5c at crossing+lag): +15min=118/967  +30min=108/967

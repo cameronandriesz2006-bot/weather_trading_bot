@@ -1,0 +1,86 @@
+  (CLOB scanned 250000 total markets across 250 pages)
+enumerated 2165 active 2-outcome order-book markets (202 multi-outcome groups) in 97s
+fetched live books for 4326/4330 tokens in 10s
+
+====================================================================================================
+CATEGORY A — YES+NO ask-sum < $1 (markets with both books quoted: 1867)
+====================================================================================================
+  ask-sum distribution near $1 (reveals whether fees keep sums >= 1):
+    sum=1.00  n= 714 ############################################################
+    sum=1.01  n= 476 ############################################################
+    sum=1.02  n= 233 ############################################################
+    sum=1.03  n= 107 ############################################################
+    sum=1.04  n=  74 ############################################################
+    sum=1.05  n=  54 ######################################################
+    sum=1.06  n=  39 #######################################
+    sum=1.07  n=  24 ########################
+    sum=1.08  n=   8 ########
+    sum=1.09  n=  12 ############
+    sum=1.10  n=   7 #######
+
+  0 Category-A opportunities found. Top 50 by gross $:
+    gross$     net$   shares    cost$  topSum lvls        cat        TTR  market
+
+  CATEGORY A TOTALS: 0 opps, gross $0.00, net@fee=0.0 $0.00
+  by market type:
+
+====================================================================================================
+CATEGORY A2 — multi-outcome arb (mutually-exclusive negRisk events)
+====================================================================================================
+      type   N     sum profit$/set  event
+   YES-sum  37   0.924       24.84  Will Pete Buttigieg win the 2028 US Presidential Election?
+   YES-sum   6   0.381        8.37  Will MUNDO-GB  win the most seats in the 2025 Guinea-Bissau 
+   YES-sum  20   0.605        6.94  Will Khaled Mashal win the Nobel Peace Prize in 2026?
+   YES-sum  10   0.954        2.64  Will Patrick Knight win the 2026 Minnesota Governor Republic
+   YES-sum  12   0.804        1.96  Will Umaro Sissoco Embaló win the 2025 Guinea-Bissau preside
+   YES-sum   3   0.963        1.70  Will an independent win the Nebraska Senate race in 2026?
+   YES-sum  45   0.966        1.16  Will J.B. Pritzker win the 2028 Democratic presidential nomi
+   YES-sum   2   0.982        0.94  Will the Republicans win the Minnesota governor race in 2026
+   YES-sum   8   0.967        0.82  Will Amazon be the largest company in the world by market ca
+   YES-sum   8   0.965        0.70  Will Fentrice Driskell be the Democratic nominee for Florida
+   YES-sum   2   0.985        0.38  Will Allen Waters be the Republican nominee for Senate in Rh
+   YES-sum   2   0.980        0.32  Will the Republicans win the Texas governor race in 2026?
+   YES-sum  35   0.988        0.31  Will Steve Bannon win the 2028 Republican presidential nomin
+   YES-sum   2   0.990        0.30  Will the Republicans win the Connecticut governor race in 20
+   YES-sum   2   0.979        0.26  Will the Democrats win the Arkansas Senate race in 2026?
+   YES-sum   9   0.983        0.21  Will the number of Republican Senate members who retire in 2
+   YES-sum   3   0.975        0.19  Will Marsha Blackburn win the 2026 Tennessee Governor Republ
+   YES-sum   6   0.963        0.18  Will US GDP growth in 2026 be between 1.0% and 1.5%?
+   YES-sum  10   0.967        0.17  Will T1 win the LCK 2026 season playoffs?
+   YES-sum   2   0.993        0.16  Will Kelly Ayotte win the 2026 New Hampshire Governor Republ
+   YES-sum   2   0.980        0.14  Will the Republicans win the Tennessee Senate race in 2026?
+   YES-sum   2   0.989        0.13  Will the Republicans win the Vermont governor race in 2026?
+   YES-sum   5   0.987        0.13  Will Jerri Green win the 2026 Tennessee Governor Democratic 
+   YES-sum   8   0.987        0.12  Will the US strike 12 countries in 2026?
+   YES-sum   2   0.988        0.11  Will the Democrats win the Colorado governor race in 2026?
+   YES-sum   7   0.980        0.10  Will OpenAI’s market cap be less than $500B at market close 
+   YES-sum   2   0.984        0.10  Will the Democrats win the Illinois Senate race in 2026?
+   YES-sum   7   0.986        0.09  Will the National Movement of Independents win the most seat
+   YES-sum  22   0.994        0.09  Will Valtteri Bottas be the 2026 F1 Drivers' Champion?
+   YES-sum   3   0.991        0.08  Will an independent win the Montana Senate race in 2026?
+   YES-sum   4   0.996        0.06  Will Paramount close Warner Bros acquisition?
+   YES-sum   4   0.996        0.05  Will Dan Innis be the Republican nominee for Senate in New H
+   YES-sum  23   0.993        0.05  Will Xavier Becerra win the California Governor Election in 
+   YES-sum  12   0.942        0.03  Will Israel strike 13 countries in 2026?
+   YES-sum   2   0.998        0.02  Will the Republicans win the New Jersey Senate race in 2026?
+   YES-sum   5   0.996        0.02  Will Europe (UEFA) win the 2026 FIFA World Cup?
+   YES-sum   2   0.998        0.01  Will the Democrats win the Georgia Senate race in 2026?
+   YES-sum   3   0.931        0.01  Will Joe S. San Agustin win the 2026 Guam Governor Democrati
+
+====================================================================================================
+CATEGORY B — locked/impossible outcomes (verified sources only)
+====================================================================================================
+  B2 resolution-known-but-tradable: 0 active markets carry a non-empty umaResolutionStatuses
+    (none — markets halt trading at resolution, so this is typically empty live)
+
+  B1 weather impossible-bucket probe (US ASOS-verified cities):
+
+======================================================================================
+C. LIVE DEPTH PROBE — open markets, impossible RIGHT NOW, real NO-book depth
+======================================================================================
+  2 impossible buckets live; walking the NO book for up to $200 each:
+  city       metric bucket            obs  NO_ask  $takeable  NO_vwap  profit$
+
+  total takeable locked profit across open impossible buckets (<= $200 each): $0
+
+[scan wall-clock 109s]

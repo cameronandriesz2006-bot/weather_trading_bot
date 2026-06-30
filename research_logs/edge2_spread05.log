@@ -1,0 +1,32 @@
+cities=['chicago', 'denver', 'nyc']  hours=[13, 16, 18, 20]  months=[2, 3, 4, 5, 6]  spread=0.05  edge_gate=0.08  fee=0.0  kelly=0.05/0.025  gap_tol=2.0F
+154 resolved in-scope events
+fetching market history for 1496 bucket tokens...
+
+evaluated 4505 (bucket,hour) cells; gated out: edge<0.08=4047, rel-spread=369, entry>0.7=38, market-gap=2
+49 actionable signals
+
+========================================================================
+EDGE-2 STRATEGY P&L  (sequential bankroll, $10,000 start)
+========================================================================
+  trades=49  wins=41 (84%)  final bankroll=$14,918
+  TOTAL P&L = $4,918  (+49.2% of start)
+  max drawdown = $-813   avg $/trade = $100.4
+  event-bootstrap 95% CI on total P&L: [$1,691, $7,923]  (excludes 0 (POSITIVE))
+
+  by city (win rate):
+    chicago      trades= 16  win=81%  pnl=$   1,727
+    denver       trades= 21  win=95%  pnl=$   2,886
+    nyc          trades= 12  win=67%  pnl=$     305
+
+  by (city, hour):
+    chicago      H=13  trades= 12  pnl=$   1,230
+    chicago      H=16  trades=  4  pnl=$     497
+    denver       H=13  trades=  7  pnl=$     554
+    denver       H=16  trades= 14  pnl=$   2,332
+    nyc          H=13  trades=  6  pnl=$     644
+    nyc          H=16  trades=  2  pnl=$    -143
+    nyc          H=18  trades=  2  pnl=$     -63
+    nyc          H=20  trades=  2  pnl=$    -133
+
+  INLAND (chicago/denver/nyc): 49 trades  $4,918
+  rest (coastal):              0 trades  $-0

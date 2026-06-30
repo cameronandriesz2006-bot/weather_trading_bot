@@ -1,0 +1,46 @@
+cities=['nyc', 'chicago', 'miami', 'denver', 'los_angeles']  months=[2, 3, 4, 5, 6]  cap=$200.0  cap_price=0.95  cadence=1min  fee=0.0
+237 resolved US events: {'miami': 60, 'los_angeles': 37, 'nyc': 73, 'chicago': 33, 'denver': 34}
+  ASOS miami: 989 obs over 39 days
+  ASOS los_angeles: 1061 obs over 39 days
+  ASOS nyc: 1013 obs over 40 days
+  ASOS chicago: 1047 obs over 39 days
+  ASOS denver: 971 obs over 39 days
+
+NWS provider-match (full-day obs extreme vs winning bucket):
+  chicago      n=  33  false-impossible=0 (0%)  ELIGIBLE
+  denver       n=  34  false-impossible=0 (0%)  ELIGIBLE
+  los_angeles  n=  37  false-impossible=0 (0%)  ELIGIBLE
+  miami        n=  60  false-impossible=1 (2%)  ELIGIBLE
+  nyc          n=  73  false-impossible=0 (0%)  ELIGIBLE
+
+1351 impossible-bucket opportunities in eligible cities; fetching NO-token trades...
+
+==============================================================================
+UNIVERSE 'money on the table' (every discounted NO-buy after the crossing,
+f=1, no cap, no latency) = GROSS UPPER BOUND on the whole opportunity
+==============================================================================
+  gross profit available = $3,214   provider-mismatch losses = $0   NET ceiling = $3,214   (over 165 city-days)
+
+==============================================================================
+REALISTIC operating points (cap=$200.0/event, cadence=1min, cap_price=0.95)
+==============================================================================
+  L_obs  win    f n_fill   gross$  losses$     NET$ deployed$    ROI   $/op          95% CI $/op
+   L2 w10  f=1.0     21                        559      2823   20%   40.0 [   +292,   +881]  (events w/ fill=14, wins=21 losses=0)
+   L2 w10  f=0.3     21                        303      1626   19%   21.7 [   +129,   +556]  (events w/ fill=14, wins=21 losses=0)
+   L2 w30  f=1.0     22                        620      3089   20%   44.3 [   +354,   +937]  (events w/ fill=14, wins=22 losses=0)
+   L2 w30  f=0.3     22                        323      1726   19%   23.1 [   +156,   +572]  (events w/ fill=14, wins=22 losses=0)
+   L5 w10  f=1.0      6                         53       527   10%   13.3 [    +42,    +67]  (events w/ fill=4, wins=6 losses=0)
+   L5 w10  f=0.3      6                         22       259    9%    5.5 [    +13,    +38]  (events w/ fill=4, wins=6 losses=0)
+   L5 w30  f=1.0      7                        150       991   15%   30.0 [    +61,   +244]  (events w/ fill=5, wins=7 losses=0)
+   L5 w30  f=0.3      7                         76       547   14%   15.3 [    +24,   +137]  (events w/ fill=5, wins=7 losses=0)
+  L10 w10  f=1.0      7                         69       570   12%   13.8 [    +54,    +92]  (events w/ fill=5, wins=7 losses=0)
+  L10 w10  f=0.3      7                         26       258   10%    5.2 [    +17,    +37]  (events w/ fill=5, wins=7 losses=0)
+  L10 w30  f=1.0      7                        143       991   14%   28.7 [    +54,   +244]  (events w/ fill=5, wins=7 losses=0)
+  L10 w30  f=0.3      7                         74       533   14%   14.7 [    +22,   +137]  (events w/ fill=5, wins=7 losses=0)
+  L20 w10  f=1.0      2                         45       289   16%   45.3 [   +nan,   +nan]  (events w/ fill=1, wins=2 losses=0)
+  L20 w10  f=0.3      2                         14        87   16%   13.6 [   +nan,   +nan]  (events w/ fill=1, wins=2 losses=0)
+  L20 w30  f=1.0      3                         81       489   17%   40.7 [   +nan,   +nan]  (events w/ fill=2, wins=3 losses=0)
+  L20 w30  f=0.3      3                         48       275   17%   23.8 [   +nan,   +nan]  (events w/ fill=2, wins=3 losses=0)
+
+  NET$ = total P&L across all events at that operating point (incl. provider-mismatch
+  losses); $/op = NET / events-with-a-fill; CI = event-bootstrap on total NET.
