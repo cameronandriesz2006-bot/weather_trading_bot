@@ -27,6 +27,7 @@ Run:  PYTHONPATH=. venv/bin/python -m backend.data.calibration_intraday
 import argparse
 import asyncio
 import gzip
+import json
 from collections import defaultdict
 from datetime import date, datetime, timezone
 from pathlib import Path
@@ -220,6 +221,7 @@ async def main():
     ap.add_argument("--hours", type=str, default=None, help="local hours to evaluate (default 7,10,13,16,18,20)")
     ap.add_argument("--months", type=str, default=None, help="restrict to these target months (e.g. 5,6,7,8,9)")
     ap.add_argument("--market-sample", type=int, default=300)
+    ap.add_argument("--dump", type=str, default=None, help="write joined (city,H,model,market,won) records to this JSONL for offline bootstrap")
     args = ap.parse_args()
 
     cities = ([c.strip() for c in args.cities.split(",")] if args.cities
@@ -302,6 +304,20 @@ async def main():
         tok_date = {r["yes_token"]: r["date"] for r in records if r["yes_token"]}
         hists = await asyncio.gather(*[_fetch_day_history(client, t, tok_date[t], sem) for t in tokens])
     hist_by_token = dict(zip(tokens, hists))
+
+    if args.dump:
+        with open(args.dump, "w") as fh:
+            for r in records:
+                if (r["city"], r["date"], r["metric"]) not in keep:
+                    continue
+                mp = _price_at(hist_by_token.get(r["yes_token"]), r["date"], tzs[r["city"]], r["H"])
+                if mp is None:
+                    continue
+                fh.write(json.dumps({"city": r["city"], "metric": r["metric"], "date": r["date"],
+                                     "H": r["H"], "model": r["model"], "market": mp,
+                                     "won": 1 if r["won"] else 0, "had_floor": r["had_floor"],
+                                     "contested": 1 if 0.10 < mp < 0.90 else 0}) + "\n")
+        print(f"  [dumped joined records -> {args.dump}]")
 
     # join + report per hour
     print(f"\n{'='*78}\nLIVE INTRADAY MODEL vs MARKET — Brier by station-local hour\n"

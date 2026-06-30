@@ -60,11 +60,18 @@ SIGMA_GRID = [round(1.0 + 0.25 * i, 2) for i in range(0, 33)]   # 1.00 .. 9.00 �
 # 1) Outcomes: resolved Polymarket daily-temperature buckets
 # ---------------------------------------------------------------------------
 async def fetch_resolved_events(client: httpx.AsyncClient) -> List[dict]:
-    """All closed daily-temperature events (paginated past the 100-event page cap)."""
+    """All closed daily-temperature events (paginated past the 100-event page cap).
+
+    Ordered MOST-RECENT-FIRST (endDate desc): the default Gamma feed returns
+    oldest-first and 422s past offset ~2000, so it silently never reaches the newest
+    months — a latent bug that made the May-Sep intraday scan come back empty. With
+    desc ordering the recent events (the ones we actually want to evaluate) are the
+    first pages; the oldest few hundred fall off the far end of the cap instead."""
     out: List[dict] = []
     for off in range(0, 6000, 100):
         r = await client.get(GAMMA, params={"closed": "true", "limit": 100,
-                                            "offset": off, "tag_slug": "daily-temperature"})
+                                            "offset": off, "tag_slug": "daily-temperature",
+                                            "order": "endDate", "ascending": "false"})
         if r.status_code >= 400:
             # Gamma caps the offset (~2000) with a 422 — treat as end of results.
             break
