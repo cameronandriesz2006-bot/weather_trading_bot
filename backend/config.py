@@ -34,7 +34,10 @@ class Settings(BaseSettings):
     # Fractional Kelly (shared sizing helper). Lowered in Phase 6: with honest
     # (Phase 4) probabilities we no longer need the aggressive fraction, and
     # smaller bets are safer until the scoreboard proves an edge. Tune empirically.
-    KELLY_FRACTION: float = 0.05
+    # RAISED 0.05 -> 0.20 on 2026-06-30 (user): the 5% fraction was far too timid for the
+    # OOS-confirmed post-high edge. Set here (not .env) so the committed config is the source
+    # of truth; the .env KELLY_FRACTION override was removed.
+    KELLY_FRACTION: float = 0.20
     # Per-trade ceiling as a FRACTION OF THE LIVE BANKROLL (relative, so it scales at
     # any bankroll — the sim runs at $10k but the live account will be smaller). This is
     # now the SINGLE per-trade cap: it replaces the old fixed $75/$100 dollar caps that
@@ -42,7 +45,7 @@ class Settings(BaseSettings):
     # confidence. The Kelly helper sizes each bet off the live bankroll and then clamps
     # the fraction here, so a bigger-edge / more-confident bet genuinely takes a larger
     # stake right up to this ceiling, and only the very strongest bets clip at it.
-    KELLY_MAX_TRADE_FRACTION: float = 0.025   # <= 2.5% of bankroll on any single bet
+    KELLY_MAX_TRADE_FRACTION: float = 0.05   # RAISED 0.025->0.05 (2026-06-30) so Kelly 0.20 isn't clamped away; <= 5% of bankroll on any single bet
 
     # Settlement cadence (shared — settles all trade types)
     SETTLEMENT_INTERVAL_SECONDS: int = 120
@@ -68,7 +71,7 @@ class Settings(BaseSettings):
     # cache hits are skipped. ~12 cold combos x 2s = ~24s, trivial inside a 15-min scan.
     WEATHER_FORECAST_FETCH_SPACING_SECONDS: float = 2.0
     WEATHER_MIN_EDGE_THRESHOLD: float = 0.08  # 8% minimum edge to trade
-    WEATHER_MAX_ENTRY_PRICE: float = 0.70
+    WEATHER_MAX_ENTRY_PRICE: float = 0.90   # RAISED 0.70->0.90 (2026-06-30, user): stop refusing the post-high FAVORITE bucket (the high is already in -> highest-confidence trades)
     # US markets resolve in °F; the international markets resolve in °C (handled
     # natively per-city — see CITY_CONFIG "unit" in backend/data/weather.py). The
     # international books carry ~2-3x the liquidity of the US weather markets.
@@ -135,7 +138,7 @@ class Settings(BaseSettings):
     # can't pile onto a single weather outcome. Default chosen by the auditor (~one full
     # position per city/day, forcing diversification across >=3 cities to use the full
     # allocation); tune to your risk appetite.
-    WEATHER_MAX_CITY_DAY_FRACTION: float = 0.07     # <= 7% of bankroll on one city+day (~$700 @ $10k)
+    WEATHER_MAX_CITY_DAY_FRACTION: float = 0.12     # RAISED 0.07->0.12 (2026-06-30) to fit the bigger Kelly stakes; <= 12% of bankroll on one city+day
 
     # --- Maker / limit-order execution (Phase 8, 2026-06-28) ---------------------
     # The day-ahead edge (Chicago/NYC, the previous day) lives in books too THIN to take at
