@@ -54,9 +54,11 @@ test**: the one OOS-robust seam the backtests found — the same-day inland afte
 (`backend/data/edge2_backtest.py`; memory `edge2-live-test-config` / `edge2-inland-afternoon-seam`).
 
 **Deployed config for the test (in `config.py` defaults unless noted):**
-- **Cities = `denver,chicago` only** — the Brier-confirmed H≥16 post-high cells. Coastal
-  (`tokyo/paris/hong_kong`) + `nyc` PARKED (their backtest "profit" was a variance/Asia-leak
-  fluke). All parked/cut cities stay in `CITY_CONFIG` so open positions still settle.
+- **Cities = `denver,chicago,atlanta`** — the Brier-confirmed H≥16 post-high cells (atlanta added
+  2026-06-30 after it cleared the same OOS bar; chicago kept on watch — it failed one OOS half).
+  Coastal (`tokyo/paris/hong_kong`) + `nyc` PARKED (their backtest "profit" was a variance/Asia-leak
+  fluke); dallas/austin screened and REJECTED. All parked/cut cities stay in `CITY_CONFIG` so open
+  positions still settle.
 - **Same-day TAKER only** — day-ahead maker leg RETIRED (`WEATHER_MAKER_ENABLED=False`); reverts to
   the byte-identical taker path, no maker_poll job. Dashboard maker panel removed.
 - **Post-extreme gate** (`WEATHER_REQUIRE_EXTREME_IN`, safeguard 7) — only trade once the day's
@@ -100,11 +102,13 @@ optional arb scanner · 9 gated go-live.
   column; `calculate_pnl` pays net odds on win, full stake on loss.
 - **Liquidity/slippage** — min liquidity + max relative-spread gates; size capped to a book
   fraction; candidates walk the real CLOB book for exact VWAP (`backend/data/orderbook.py`).
-- **Sizing is bankroll-relative** — `KELLY_FRACTION` 0.05, `KELLY_MAX_TRADE_FRACTION` 0.025,
-  `WEATHER_MAX_ALLOCATION_FRACTION` 0.20, `WEATHER_MAX_CITY_DAY_FRACTION` 0.07, daily-loss 0.15.
+- **Sizing is bankroll-relative** — `KELLY_FRACTION` 0.20, `KELLY_MAX_TRADE_FRACTION` 0.05,
+  `WEATHER_MAX_ALLOCATION_FRACTION` 0.20, `WEATHER_MAX_CITY_DAY_FRACTION` 0.12, daily-loss 0.15.
+  (Loosened 2026-06-30 from 0.05/0.025/0.07 for the OOS-confirmed post-high edge; entry cap also
+  raised 0.70→0.90 to take the post-high favorites.)
 - **Settlement** — matches the exact bucket by id; settles when closed OR local day over + price
   decisive.
-- **Cities** — Edge-2 test: **2 active (`denver, chicago`)**; `nyc` + coastal (`tokyo, paris,
+- **Cities** — Edge-2 test: **3 active (`denver, chicago, atlanta`)**; `nyc` + coastal (`tokyo, paris,
   hong_kong`) parked, LA/shanghai cut (un-resolvable stations). All parked/cut cities stay in
   `CITY_CONFIG` so open positions still settle.
 - **°C cities** — native unit throughout, no conversion; σ-floor constants scaled 1/1.8 for °C.
