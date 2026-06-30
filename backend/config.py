@@ -86,11 +86,13 @@ class Settings(BaseSettings):
     # Tokyo/Paris (parity; Paris +0.017 is borderline-parity, kept on watch). Same mechanism as
     # above: PARKED not deleted — they stay in CITY_CONFIG so positions settle + history is
     # preserved, and it's reversible. The maker wiring (next) trades exactly these 6.
-    # NARROWED 2026-06-30 to the Edge-2 live test: only denver+chicago, the Brier-confirmed
-    # same-day afternoon (H>=16, post-high) nowcast cells. Coastal (tokyo/paris/hong_kong) + nyc
-    # PARKED (their backtest profit was a variance/Asia-leak fluke); all stay in CITY_CONFIG so
-    # open positions still settle. See edge2_backtest.py / memory edge2-live-test-config.
-    WEATHER_CITIES: str = "denver,chicago"
+    # NARROWED 2026-06-30 to the Edge-2 live test: the Brier-confirmed same-day afternoon
+    # (H>=16, post-high) nowcast cells. denver+chicago first; ATLANTA added after it cleared the
+    # same OOS bar denver did (edge2_oos_backtest: Brier beats market both halves, profitable both;
+    # dallas/austin FAILED and were rejected). Coastal (tokyo/paris/hong_kong) + nyc PARKED (their
+    # backtest profit was a variance/Asia-leak fluke); all stay in CITY_CONFIG so open positions
+    # still settle. See edge2_oos_backtest.py / memory edge2-inland-afternoon-seam.
+    WEATHER_CITIES: str = "denver,chicago,atlanta"
 
     # Trading costs (Phase 6) — "profit" must mean profit net of costs.
     # On Polymarket the dominant cost is the bid/ask spread (the live market

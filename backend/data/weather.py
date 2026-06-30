@@ -76,6 +76,16 @@ CITY_CONFIG: Dict[str, dict] = {
         "unit": "F",
         "tz": "America/Denver",
     },
+    "atlanta": {
+        "name": "Atlanta",
+        # Settles on Hartsfield-Jackson Intl (KATL) per the market resolution text
+        # (Wunderground KATL). Added 2026-06-30 — OOS-confirmed H=16 edge (see edge2_oos_backtest).
+        "lat": 33.6407,
+        "lon": -84.4277,
+        "nws_station": "KATL",
+        "unit": "F",
+        "tz": "America/New_York",
+    },
     # --- International cities (resolve in °C; high-liquidity books) --------------
     # Coordinates are the exact settlement station named in each market's
     # Polymarket resolution description. Open-Meteo snaps to its nearest grid cell,
@@ -149,6 +159,7 @@ METEOSTAT_STATION: Dict[str, Optional[str]] = {
     "miami": "72202",        # KMIA
     "los_angeles": "72295",  # KLAX
     "denver": "KBKF0",       # Buckley SFB
+    "atlanta": "72219",      # KATL Hartsfield-Jackson
     "london": "EGLC0",       # London City
     "tokyo": "47671",        # Haneda
     "seoul": "47113",        # Incheon

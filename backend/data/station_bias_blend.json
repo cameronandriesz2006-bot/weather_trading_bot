@@ -164,6 +164,20 @@
         "stdev_f": 0.906,
         "samples": 63
       }
+    },
+    "atlanta": {
+      "unit": "F",
+      "station": "72219",
+      "high": {
+        "bias_f": -1.753,
+        "stdev_f": 1.96,
+        "samples": 61
+      },
+      "low": {
+        "bias_f": -1.59,
+        "stdev_f": 1.576,
+        "samples": 61
+      }
     }
   }
 }

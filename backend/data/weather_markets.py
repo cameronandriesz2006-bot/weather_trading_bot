@@ -32,6 +32,7 @@ SLUG_CITY_TO_KEY = {
     "chicago": "chicago",
     "miami": "miami",
     "denver": "denver",
+    "atlanta": "atlanta",
     "los-angeles": "los_angeles",
     # International (Celsius) cities. The slug fragment uses hyphens; our key uses
     # underscores. Must match CITY_CONFIG keys in backend/data/weather.py.
