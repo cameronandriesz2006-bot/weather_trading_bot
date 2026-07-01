@@ -358,12 +358,12 @@ async def _fetch_daily_temperature_events(client: httpx.AsyncClient) -> List[dic
 async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None) -> List[WeatherMarket]:
     """
     Fetch open Polymarket daily-temperature range-bucket markets for the given
-    cities (default: all tracked cities), dated today or later.
+    cities (default: all tracked cities), dated on/after each station's current
+    LOCAL day (not the server's UTC day — see the per-city prune below).
     """
-    from backend.data.weather import CITY_CONFIG
+    from backend.data.weather import CITY_CONFIG, station_local_now
 
     markets: List[WeatherMarket] = []
-    today = date.today()
 
     try:
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -380,9 +380,15 @@ async def fetch_polymarket_weather_markets(city_keys: Optional[List[str]] = None
 
         if city_keys and city_key not in city_keys:
             continue
-        if target_date < today:
-            continue
         if city_key not in CITY_CONFIG:
+            continue
+        # Prune only days already PAST on the STATION's local clock, not the server's
+        # UTC clock. The server runs UTC — hours ahead of the US stations — so
+        # date.today() flips to 'tomorrow' at 00:00 UTC (= ~6pm local) and used to
+        # discard the still-open same-local-day market, i.e. exactly the evening
+        # post-high window the same-day taker strategy exists to trade. Keying off the
+        # station-local date keeps today's market alive until the local day ends locally.
+        if target_date < station_local_now(city_key).date():
             continue
         city_name = CITY_CONFIG[city_key]["name"]
         unit = CITY_CONFIG[city_key].get("unit", "F")
