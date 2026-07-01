@@ -92,7 +92,17 @@ optional arb scanner · 9 gated go-live.
   every weather prediction used to grade wrong.
 - **Market fetch** — Gamma `tag_slug=daily-temperature`, paginated, city/metric/date from event
   slug, buckets parsed as numeric ranges, skip-don't-guess. `parse_bucket_label` handles °F ranges,
-  °C single-degree, sub-zero, open tails.
+  °C single-degree, sub-zero, open tails. Same-day market kept until each station's LOCAL day ends
+  (prune by `station_local_now(city).date()`, NOT the server's UTC `date.today()` — the server is
+  UTC and used to drop the still-open same-local-day market at 00:00 UTC = ~6pm local).
+- **Post-extreme gate opens intraday** (2026-07-01 fix, `fetch_observed_extreme`) — the observed
+  floor/ceiling now comes from Meteostat **hourly** obs (running max/min over elapsed local hours)
+  on the in-progress day, not the **daily** aggregate (which isn't published until the day is over,
+  so the gate never opened in the 16-18h trading window → the Edge-2 test had traded nothing).
+  Finished days keep the daily aggregate. This + the local-date fix are why the bot can finally
+  reach the window. Execution-honest backtest (`edge2_execution_honest.py`): the edge is real &
+  OOS-robust at action-hours 16-17 and decays to nothing by 18-20 as the market rails out — so it's
+  capturable only if we act within ~1-2h of the high; real-fill P&L in the live window is the go/no-go.
 - **Station/timezone** — `CITY_CONFIG` lat/lon at the settlement station; `timezone=auto` so the
   high/low is the local-day extreme.
 - **Honest probability** — fitted Normal over ensemble mean/spread, integrated over the bucket's
