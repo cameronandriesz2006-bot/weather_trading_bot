@@ -813,6 +813,7 @@ async def fetch_nws_observed_temperature(city_key: str, target_date: Optional[da
 # censor the forecast distribution at it (see EnsembleForecast._fitted_bucket_prob).
 # Near settlement this collapses our (otherwise too-wide) uncertainty to reality.
 _METEOSTAT_DAILY_URL = "https://d.meteostat.net/app/proxy/stations/daily"
+_METEOSTAT_HOURLY_URL = "https://d.meteostat.net/app/proxy/stations/hourly"
 _METEOSTAT_HEADERS = {"User-Agent": "Mozilla/5.0"}  # the proxy 403s a bare client
 _observed_cache: Dict[str, tuple] = {}   # key -> (timestamp, value-or-None)
 _OBSERVED_TTL = 900  # 15 min
@@ -880,10 +881,20 @@ async def fetch_observed_extreme(
     value. Returns None when it can't be trusted (no obs station, future date, or
     fetch failure) so callers fall back to the uncensored forecast.
 
+    Source depends on whether the local day is still unfolding:
+      - IN-PROGRESS day: running max/min over the station's HOURLY obs up to the
+        current local hour. The DAILY tmax/tmin aggregate is not published until the
+        day is over, so reading it intraday returns None and the post-extreme gate
+        never opens in the afternoon — which is precisely the window the same-day
+        strategy trades. Hourly obs is available intraday and is the same
+        running-extreme the OOS backtest priced on.
+      - FINISHED past day: the DAILY aggregate, now the authoritative final extreme.
+
     Meteostat is observation-based, so it never OVERSTATES the extreme; if it lags
     a couple hours the bound is merely weaker (safe), never wrong — which is also
     why it's harmless before the diurnal peak and strongest in the evening, exactly
-    when we want it.
+    when we want it. We only count hours <= the current local hour so a model-filled
+    FUTURE hour (the proxy backfills the rest of the calendar day) can't leak in.
     """
     if city_key not in CITY_CONFIG:
         return None
@@ -913,21 +924,52 @@ async def fetch_observed_extreme(
     if cached and now - cached[0] < _OBSERVED_TTL:
         return cached[1]
 
+    in_progress = target_date == local_date
+    unit = CITY_CONFIG[city_key].get("unit", "F")
     value: Optional[float] = None
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
-            r = await client.get(_METEOSTAT_DAILY_URL, params={
-                "station": station,
-                "start": (target_date - timedelta(days=1)).isoformat(),
-                "end": target_date.isoformat(),
-            }, headers=_METEOSTAT_HEADERS)
-            if r.status_code == 200:
-                rows = {x.get("date", "")[:10]: x for x in r.json().get("data", []) or []}
-                row = rows.get(target_date.isoformat())
-                val_c = row.get(field) if row else None
-                if val_c is not None:
-                    unit = CITY_CONFIG[city_key].get("unit", "F")
-                    value = _celsius_to_fahrenheit(val_c) if unit == "F" else float(val_c)
+            if in_progress:
+                # Intraday: derive the observed-SO-FAR extreme from HOURLY obs. The proxy
+                # returns LOCAL timestamps when given ``tz``, so ``time[11:13]`` is the local
+                # hour; keep only hours <= now so a backfilled future hour can't leak in.
+                r = await client.get(_METEOSTAT_HOURLY_URL, params={
+                    "station": station,
+                    "start": target_date.isoformat(),
+                    "end": target_date.isoformat(),
+                    "tz": CITY_CONFIG[city_key].get("tz") or "UTC",
+                }, headers=_METEOSTAT_HEADERS)
+                if r.status_code == 200:
+                    temps_c = []
+                    for row in r.json().get("data", []) or []:
+                        t, temp = row.get("time"), row.get("temp")
+                        if not t or temp is None:
+                            continue
+                        try:
+                            same_day = t[:10] == target_date.isoformat()
+                            hr = int(t[11:13])
+                        except (ValueError, IndexError):
+                            continue
+                        # target day only, and only hours already elapsed (a boundary row
+                        # from an adjacent day, or a backfilled future hour, must not leak in)
+                        if same_day and hr <= local_now.hour:
+                            temps_c.append(float(temp))
+                    if temps_c:
+                        ext_c = max(temps_c) if metric == "high" else min(temps_c)
+                        value = _celsius_to_fahrenheit(ext_c) if unit == "F" else ext_c
+            else:
+                # Finished local day: the DAILY aggregate is the authoritative final extreme.
+                r = await client.get(_METEOSTAT_DAILY_URL, params={
+                    "station": station,
+                    "start": (target_date - timedelta(days=1)).isoformat(),
+                    "end": target_date.isoformat(),
+                }, headers=_METEOSTAT_HEADERS)
+                if r.status_code == 200:
+                    rows = {x.get("date", "")[:10]: x for x in r.json().get("data", []) or []}
+                    row = rows.get(target_date.isoformat())
+                    val_c = row.get(field) if row else None
+                    if val_c is not None:
+                        value = _celsius_to_fahrenheit(val_c) if unit == "F" else float(val_c)
     except Exception as e:
         logger.debug(f"Observed-extreme fetch failed for {city_key}/{metric}: {e}")
         return None  # don't cache transient failures
