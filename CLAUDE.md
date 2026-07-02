@@ -20,6 +20,9 @@ If OUR forecast is wrong we *think* the market is mispriced when really we are �
 safeguard exists to only bet when we genuinely know something:
 
 1. **Volume gate** — skip "ghost town" markets where almost nothing has actually traded.
+   Liquidity/spread gates are REGIME-SCOPED (2026-07-02): strict ($500 / 10%) day-ahead &
+   pre-extreme; relaxed ($50 / 60%, `WEATHER_EXTREME_*`) once the extreme is observed-in,
+   where thin/wide books are structural and the book-fraction cap scales the stake instead.
 2. **Live CLOB price, not stale Gamma** — read the real order book both to find edges and to mark
    open positions.
 3. **Real fill price incl. slippage** — walk the actual offers and pay the true VWAP; edges that
