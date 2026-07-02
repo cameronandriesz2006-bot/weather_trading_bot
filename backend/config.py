@@ -214,17 +214,16 @@ class Settings(BaseSettings):
     # (each model contributes equally regardless of its member count: GFS 31 / ECMWF 51
     # / ICON 40). If a model returns no data the blend falls back to whatever is present.
     WEATHER_BLEND_MODELS: str = "gfs_seamless,ecmwf_ifs025,icon_seamless"
-    # σ-widening for the blend path. DERIVED via backend/data/blend_validate.py on
-    # 2026-06-22 (n=30 city-days): the 3-model pool's spread-skill ratio is ~0.49 (vs
-    # GEFS ~0.25), i.e. still under-dispersed, so spread is multiplied by ~1/0.49 ≈ 2.04
-    # to calibrate (lifted range-coverage 50%→83%, target ~90%). NOTE this is MORE
-    # widening than the GFS path (1.3) — the earlier "the blend needs less" guess was
-    # wrong: a single model's 31 members agree too much, and even the 3-model pool is
-    # still over-confident (ratio 0.49 < 1.0). CAVEAT: the dispersion sample is shallow (~30 days =
-    # ensemble-api archive depth), so 2.04 is a STARTING POINT — re-run blend_validate as
-    # the archive deepens / the season shifts and watch live coverage. The skill result
-    # (n=543) is solid; this knob is the soft part, and erring wider is the safe side.
-    WEATHER_BLEND_SIGMA_INFLATION: float = 2.04
+    # σ-widening for the blend path. RE-FIT 2026-07-02 vs SETTLEMENT-GRADE obs (IEM
+    # METARs, per-ob Wunderground °F rounding; `blend_validate --obs iem`, active
+    # cities): pool spread-skill ratio 0.71 → inflation 1/0.71 ≈ 1.41, range-coverage
+    # 92%. The previous 2.04 (2026-06-22) was fit against Meteostat daily obs whose
+    # noise (misses the settled bucket 8/20 Jun days in Atlanta) inflated the apparent
+    # forecast RMSE and hence the widening — the audit's "over-wide σ kills inland
+    # center skill" mechanism, now with a measured cause. CAVEAT: n=12 city-days
+    # (ensemble archive depth); re-run as it deepens. Low-stakes for the Edge-2 window
+    # itself (the intraday σ curve prices there), matters day-ahead/pre-floor.
+    WEATHER_BLEND_SIGMA_INFLATION: float = 1.41
 
     # Scoreboard visual-reset cutoff (UTC ISO8601, matches the UTC-naive DB timestamps).
     # When SET, the dashboard scoreboard (calibration + cohort tables) counts ONLY trades &

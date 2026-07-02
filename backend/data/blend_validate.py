@@ -32,6 +32,7 @@ import httpx
 
 from backend.config import settings
 from backend.data.weather import CITY_CONFIG, METEOSTAT_STATION
+from backend.data.bias_backfill import _fetch_obs_daily_iem
 
 HIST = "https://historical-forecast-api.open-meteo.com/v1/forecast"
 ENS = "https://ensemble-api.open-meteo.com/v1/ensemble"
@@ -59,6 +60,19 @@ async def _hist(cl, lat, lon, model, start, end):
     lo = d.get("temperature_2m_min", []) or []
     return {t[i]: {"high": hi[i] if i < len(hi) else None, "low": lo[i] if i < len(lo) else None}
             for i in range(len(t))}
+
+
+OBS_MODE = "meteostat"   # set to "iem" by --obs iem (settlement-grade METAR obs)
+
+
+async def _obs_for(cl, cfg, st, start, end):
+    """Realized daily obs for one city: settlement-grade IEM METARs (per-ob WU-rounded
+    F, the number the market settles on) when OBS_MODE='iem' and the city has an NWS
+    station; else the Meteostat daily aggregate (legacy reference)."""
+    icao = cfg.get("nws_station")
+    if OBS_MODE == "iem" and icao and cfg.get("unit", "F") == "F":
+        return await _fetch_obs_daily_iem(cl, icao, start, end, cfg.get("tz") or "UTC")
+    return await _obs(cl, st, start, end)
 
 
 async def _obs(cl, st, start, end):
@@ -96,7 +110,7 @@ async def run_skill(cl, cities, models, days):
         if not cfg or not st:
             continue
         per = {m: await _hist(cl, cfg["lat"], cfg["lon"], m, start, end) for m in models}
-        obs = await _obs(cl, st, start, end)
+        obs = await _obs_for(cl, cfg, st, start, end)
         for metric in ("high", "low"):
             g, b = [], []
             for day, ov in obs.items():
@@ -126,7 +140,7 @@ async def run_dispersion(cl, cities, models, past_days):
         if not cfg or not st:
             continue
         per = {m: await _ens(cl, cfg["lat"], cfg["lon"], m, past_days) for m in models}
-        obs = await _obs(cl, st, date.today() - timedelta(days=past_days + 2), date.today())
+        obs = await _obs_for(cl, cfg, st, date.today() - timedelta(days=past_days + 2), date.today())
         for day, ov in obs.items():
             a = ov.get("high")
             if a is None or any(day not in per[m] for m in models):
@@ -148,7 +162,11 @@ async def main():
     ap.add_argument("--past-days", type=int, default=35, help="dispersion window (ensemble archive, default 35)")
     ap.add_argument("--cities", type=str, default=None, help="comma list (default = active WEATHER_CITIES)")
     ap.add_argument("--skip-dispersion", action="store_true")
+    ap.add_argument("--obs", choices=("meteostat", "iem"), default="meteostat",
+                    help="'iem' = settlement-grade METAR obs for US cities")
     args = ap.parse_args()
+    global OBS_MODE
+    OBS_MODE = args.obs
 
     cities = ([c.strip() for c in args.cities.split(",")] if args.cities
               else [c.strip() for c in settings.WEATHER_CITIES.split(",") if c.strip()])

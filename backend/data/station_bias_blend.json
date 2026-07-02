@@ -1,95 +1,109 @@
 {
-  "computed_at": "2026-06-21T06:16:24.494727",
+  "computed_at": "2026-07-02T06:57:04.831609",
   "window_days": 60,
   "models": [
     "gfs_seamless",
     "ecmwf_ifs025",
     "icon_seamless"
   ],
-  "method": "blend(gfs_seamless+ecmwf_ifs025+icon_seamless)_vs_meteostat_station_obs",
+  "method": "blend(gfs_seamless+ecmwf_ifs025+icon_seamless)_vs_iem_settlement_obs",
   "note": "bias_f = mean(forecast - observed) in each city's NATIVE unit (F US / C intl); SUBTRACT from forecast mean before pricing.",
   "stations": {
     "nyc": {
       "unit": "F",
       "station": "72503",
       "high": {
-        "bias_f": 0.179,
-        "stdev_f": 1.861,
-        "samples": 63
+        "bias_f": 0.556,
+        "stdev_f": 1.487,
+        "samples": 62
       },
       "low": {
-        "bias_f": -0.841,
-        "stdev_f": 2.08,
-        "samples": 63
+        "bias_f": -1.06,
+        "stdev_f": 1.824,
+        "samples": 62
       }
     },
     "chicago": {
       "unit": "F",
       "station": "72530",
       "high": {
-        "bias_f": -0.109,
-        "stdev_f": 1.308,
-        "samples": 63
+        "bias_f": 0.021,
+        "stdev_f": 1.268,
+        "samples": 62
       },
       "low": {
-        "bias_f": -0.437,
-        "stdev_f": 1.745,
-        "samples": 63
+        "bias_f": -0.42,
+        "stdev_f": 1.158,
+        "samples": 62
       }
     },
     "miami": {
       "unit": "F",
       "station": "72202",
       "high": {
-        "bias_f": -1.663,
-        "stdev_f": 1.234,
-        "samples": 63
+        "bias_f": -1.07,
+        "stdev_f": 0.847,
+        "samples": 62
       },
       "low": {
-        "bias_f": -0.346,
-        "stdev_f": 1.463,
-        "samples": 63
+        "bias_f": -0.394,
+        "stdev_f": 1.403,
+        "samples": 62
       }
     },
     "los_angeles": {
       "unit": "F",
       "station": "72295",
       "high": {
-        "bias_f": 2.601,
-        "stdev_f": 2.069,
-        "samples": 63
+        "bias_f": 2.926,
+        "stdev_f": 1.789,
+        "samples": 62
       },
       "low": {
-        "bias_f": -1.046,
-        "stdev_f": 1.216,
-        "samples": 63
+        "bias_f": -0.863,
+        "stdev_f": 1.059,
+        "samples": 62
       }
     },
     "denver": {
       "unit": "F",
       "station": "KBKF0",
       "high": {
-        "bias_f": -1.111,
-        "stdev_f": 1.76,
-        "samples": 55
+        "bias_f": -1.461,
+        "stdev_f": 1.248,
+        "samples": 62
       },
       "low": {
-        "bias_f": 0.099,
-        "stdev_f": 1.998,
-        "samples": 55
+        "bias_f": 0.188,
+        "stdev_f": 1.902,
+        "samples": 62
+      }
+    },
+    "atlanta": {
+      "unit": "F",
+      "station": "72219",
+      "high": {
+        "bias_f": -1.455,
+        "stdev_f": 1.208,
+        "samples": 62
+      },
+      "low": {
+        "bias_f": -1.888,
+        "stdev_f": 1.17,
+        "samples": 62
       }
     },
     "london": {
       "unit": "C",
       "station": "EGLC0",
       "high": {
-        "bias_f": 0.034,
-        "stdev_f": 0.69,
+        "bias_f": -0.109,
+        "stdev_f": 0.867,
         "samples": 55
       },
       "low": {
-        "bias_f": -0.29,
-        "stdev_f": 0.668,
+        "bias_f": -0.318,
+        "stdev_f": 0.612,
         "samples": 55
       }
     },
@@ -97,13 +111,13 @@
       "unit": "C",
       "station": "47671",
       "high": {
-        "bias_f": 0.151,
-        "stdev_f": 0.906,
+        "bias_f": 0.061,
+        "stdev_f": 0.832,
         "samples": 63
       },
       "low": {
-        "bias_f": -0.177,
-        "stdev_f": 0.706,
+        "bias_f": -0.116,
+        "stdev_f": 0.658,
         "samples": 63
       }
     },
@@ -120,20 +134,20 @@
         "stdev_f": 0.0,
         "samples": 0
       },
-      "skipped": "source_inconsistent(1.4>1.1)"
+      "skipped": "source_inconsistent(1.7>1.1)"
     },
     "paris": {
       "unit": "C",
       "station": "07150",
       "high": {
-        "bias_f": -0.343,
-        "stdev_f": 0.697,
-        "samples": 58
+        "bias_f": -0.367,
+        "stdev_f": 0.735,
+        "samples": 60
       },
       "low": {
-        "bias_f": 0.156,
-        "stdev_f": 0.703,
-        "samples": 58
+        "bias_f": 0.085,
+        "stdev_f": 0.691,
+        "samples": 60
       }
     },
     "shanghai": {
@@ -155,28 +169,14 @@
       "unit": "C",
       "station": "45007",
       "high": {
-        "bias_f": -1.643,
-        "stdev_f": 0.917,
+        "bias_f": -1.734,
+        "stdev_f": 0.844,
         "samples": 63
       },
       "low": {
-        "bias_f": -0.841,
-        "stdev_f": 0.906,
+        "bias_f": -0.868,
+        "stdev_f": 0.942,
         "samples": 63
-      }
-    },
-    "atlanta": {
-      "unit": "F",
-      "station": "72219",
-      "high": {
-        "bias_f": -1.753,
-        "stdev_f": 1.96,
-        "samples": 61
-      },
-      "low": {
-        "bias_f": -1.59,
-        "stdev_f": 1.576,
-        "samples": 61
       }
     }
   }

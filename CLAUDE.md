@@ -106,8 +106,18 @@ optional arb scanner · 9 gated go-live.
   confidently wrong as the nowcast ANCHOR (σ 0.2-0.4°F). History of the gate fixes (UTC-date prune,
   hourly-obs) in git log ca5f637/a3ceee5. The execution-honest backtest (`edge2_execution_honest.py`)
   says the edge lives at action-hours 16-17 and rails out by 18-20 — but it consumed ARCHIVED obs
-  (an obs-vintage look-ahead); it must be re-run with publish-time-honest METAR data before any
-  P&L is trusted.
+  (an obs-vintage look-ahead). The publish-time-honest re-run (`edge2_publish_honest.py`,
+  2026-07-02: obs knowable only at ob_time+15min, METAR cadence, live gates) says the **edge
+  SURVIVES at Ha=16: OOS-positive in both halves**; decays at 17, dead by 18-19. City screen:
+  denver + atlanta earn slots; chicago fails H1 a 3rd time; nyc negative; miami thin/coastal.
+  Fill realism (flat 2c spread) is still the untested half — live real-fill P&L is the final gate.
+  **Floor is METAR-only** (`rawMessage` present): the NWS API's interleaved 5-min synoptic feed
+  can read ABOVE settlement (KATL 2026-06-30: 96.8 vs settled 94-95) — never use it as a floor.
+  **Floor-honesty job** (daily 09:10 UTC, `backend/core/floor_monitor.py`) compares our extreme
+  vs each settled bucket and WARNs on divergence — caught the 5-min-feed bug on its first run.
+  **Calibration stack refit on settlement-grade obs 2026-07-02** (all deployed): blend bias table
+  (`--obs iem`; denver −1.46, atlanta −1.46), σ-inflation 2.04→1.41 (old value inflated by
+  Meteostat reference noise), intraday-σ curve on 5y IEM METARs (`intraday_refit_iem.py`).
 - **Station/timezone** — `CITY_CONFIG` lat/lon at the settlement station; `timezone=auto` so the
   high/low is the local-day extreme.
 - **Honest probability** — fitted Normal over ensemble mean/spread, integrated over the bucket's

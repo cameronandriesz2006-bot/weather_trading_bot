@@ -24,7 +24,10 @@ Writes backend/data/station_bias.json, which weather.py reads at forecast time.
 """
 import argparse
 import asyncio
+import csv
+import io
 import json
+import math
 import statistics
 from datetime import date, datetime, timedelta
 from pathlib import Path
@@ -209,6 +212,42 @@ async def _fetch_obs_daily(
     return out
 
 
+IEM_ASOS = "https://mesonet.agron.iastate.edu/cgi-bin/request/asos.py"
+
+
+async def _fetch_obs_daily_iem(
+    client: httpx.AsyncClient, icao: str, start: date, end: date, tzname: str,
+) -> Dict[str, Dict[str, Optional[float]]]:
+    """SETTLEMENT-GRADE realized daily max/min: IEM ASOS METARs (routine+specials) at
+    the exact settlement station, each ob rounded to the integer °F Wunderground
+    displays (half-up) BEFORE the daily extreme — the number the market resolves on.
+    Meteostat's daily aggregate disagrees with the settled bucket on a material share
+    of days (Atlanta 8/20, Jun 2026), so a bias fit against it is fit against noise."""
+    params = {
+        "station": icao.lstrip("K"), "data": "tmpf",
+        "year1": start.year, "month1": start.month, "day1": start.day,
+        "year2": end.year, "month2": end.month, "day2": end.day,
+        "tz": tzname, "format": "onlycomma", "missing": "M", "report_type": "3,4"}
+    r = None
+    for attempt in range(4):
+        try:
+            r = await client.get(IEM_ASOS, params=params, timeout=180.0)
+            if r.status_code != 429:
+                break
+        except httpx.HTTPError:      # stale keep-alive / dropped connection: retry too
+            if attempt == 3:
+                raise
+        await asyncio.sleep(45 * (attempt + 1))   # IEM per-IP throttle: back off and retry
+    r.raise_for_status()
+    per_day: Dict[str, List[float]] = {}
+    for row in csv.DictReader(io.StringIO(r.text)):
+        if row.get("tmpf") in ("M", "", None):
+            continue
+        per_day.setdefault(row["valid"][:10], []).append(
+            float(math.floor(float(row["tmpf"]) + 0.5)))
+    return {d: {"high": max(v), "low": min(v)} for d, v in per_day.items()}
+
+
 def _errors(forecast: dict, actual: dict, metric: str) -> List[float]:
     """forecast - actual for every date present (and non-null) in both."""
     errs = []
@@ -224,7 +263,8 @@ def _errors(forecast: dict, actual: dict, metric: str) -> List[float]:
 
 
 async def compute_all(days: int = DEFAULT_WINDOW_DAYS,
-                      models: Optional[List[str]] = None) -> dict:
+                      models: Optional[List[str]] = None,
+                      obs_source: str = "meteostat") -> dict:
     """Compute bias = mean(forecast - observed) per station and metric, in the city's
     native unit, using realized station observations as the 'actual'. ``models`` set =
     re-fit for the equal-weight BLEND of those models (writes station_bias_blend.json);
@@ -257,7 +297,11 @@ async def compute_all(days: int = DEFAULT_WINDOW_DAYS,
             forecast = (await _fetch_forecast_blend(client, cfg["lat"], cfg["lon"], start, end, temp_unit, models)
                         if blend else
                         await _fetch_forecast_daily(client, cfg["lat"], cfg["lon"], start, end, temp_unit))
-            actual = await _fetch_obs_daily(client, station_id, start, end, unit)
+            icao = cfg.get("nws_station")
+            if obs_source == "iem" and icao and unit == "F":
+                actual = await _fetch_obs_daily_iem(client, icao, start, end, cfg.get("tz") or "UTC")
+            else:
+                actual = await _fetch_obs_daily(client, station_id, start, end, unit)
 
             # Guard: only trust this bias if the forecast source agrees with the live
             # ensemble model(s) on recent days (else it's a different model's bias —
@@ -288,7 +332,8 @@ async def compute_all(days: int = DEFAULT_WINDOW_DAYS,
         "computed_at": datetime.utcnow().isoformat(),
         "window_days": days,
         "models": models if blend else ["gfs_seamless"],
-        "method": (f"blend({'+'.join(models)})" if blend else "gfs_seamless") + "_vs_meteostat_station_obs",
+        "method": (f"blend({'+'.join(models)})" if blend else "gfs_seamless")
+                  + ("_vs_iem_settlement_obs" if obs_source == "iem" else "_vs_meteostat_station_obs"),
         "note": ("bias_f = mean(forecast - observed) in each city's NATIVE unit "
                  "(F US / C intl); SUBTRACT from forecast mean before pricing."),
         "stations": stations,
@@ -306,6 +351,9 @@ def main():
     parser.add_argument("--blend", action="store_true",
                         help="re-fit for the multi-model blend (config.WEATHER_BLEND_MODELS) "
                              "-> station_bias_blend.json (else GFS-only -> station_bias.json)")
+    parser.add_argument("--obs", choices=("meteostat", "iem"), default="meteostat",
+                        help="'iem' = settlement-grade METAR obs (US cities w/ nws_station; "
+                             "others fall back to meteostat)")
     args = parser.parse_args()
 
     if args.blend:
@@ -315,7 +363,7 @@ def main():
     else:
         models, out_path = None, BIAS_FILE
 
-    data = asyncio.run(compute_all(args.days, models=models))
+    data = asyncio.run(compute_all(args.days, models=models, obs_source=args.obs))
     write_bias(data, out_path)
 
     print(f"Wrote {out_path}  (window {data['window_days']}d, {data['method']})")

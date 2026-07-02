@@ -376,6 +376,26 @@ async def heartbeat_job():
             db.close()
 
 
+async def floor_honesty_job():
+    """Daily ground-truth check: our settlement-grade observed extreme vs the bucket
+    the market resolved to, per active city (backend/core/floor_monitor.py). A
+    mismatch means the obs feed and the settlement source diverged — the 2026-07-01
+    failure mode — and is logged as a WARNING so it can't hide again."""
+    try:
+        from backend.core.floor_monitor import floor_honesty_check
+        results = await floor_honesty_check()
+        bad = [r for r in results if not r["ok"]]
+        if bad:
+            log_event("warning", f"Floor-honesty: {len(bad)}/{len(results)} city-days MISMATCHED "
+                                 f"the settled bucket", {"mismatches": bad})
+        elif results:
+            log_event("success", f"Floor-honesty: {len(results)} city-days match the settled bucket")
+        else:
+            log_event("data", "Floor-honesty: nothing checkable yet (no resolved events)")
+    except Exception as e:
+        log_event("warning", f"Floor-honesty job failed: {e}")
+
+
 def start_scheduler():
     """Start the background scheduler for weather trading."""
     global scheduler
@@ -404,6 +424,17 @@ def start_scheduler():
         id="heartbeat",
         replace_existing=True,
         max_instances=1
+    )
+
+    # Floor-honesty: daily at 09:10 UTC — all US station-local days are finished and
+    # most temperature markets have resolved; day-2 re-check catches late resolutions.
+    from apscheduler.triggers.cron import CronTrigger
+    scheduler.add_job(
+        floor_honesty_job,
+        CronTrigger(hour=9, minute=10),
+        id="floor_honesty",
+        replace_existing=True,
+        max_instances=1,
     )
 
     # Weather trading jobs (gated by WEATHER_ENABLED)

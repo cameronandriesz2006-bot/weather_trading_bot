@@ -864,6 +864,13 @@ async def _nws_observed_extreme(
         ts = props.get("timestamp")
         if temp_c is None or not ts:
             continue
+        # METARs ONLY (rawMessage present). The API interleaves a 5-min synoptic feed
+        # whose readings can exceed anything Wunderground displays (KATL 2026-06-30:
+        # 96.8F in the 5-min feed, settled bucket 94-95) — using them would push the
+        # floor ABOVE settlement truth and wrongly kill the true bucket. Wunderground
+        # resolves on displayed METAR obs; so must the floor.
+        if not props.get("rawMessage"):
+            continue
         try:
             local_dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(tz)
         except ValueError:
