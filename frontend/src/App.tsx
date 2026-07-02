@@ -50,6 +50,7 @@ function App() {
   const recentTrades = data?.recent_trades ?? []
   const calibration = data?.calibration ?? null
   const biasSegments = data?.bias_segments ?? []
+  const watchSegments = data?.watch_segments ?? []
   const scoreboardEpoch = data?.scoreboard_epoch ?? null
   const stats = data?.stats ?? {
     is_running: false, last_run: null, total_trades: 0, total_pnl: 0,
@@ -166,7 +167,7 @@ function App() {
         </section>
 
         {/* ===== Scoreboard & calibration ===== */}
-        <Scoreboard calibration={calibration} biasSegments={biasSegments} epoch={scoreboardEpoch} />
+        <Scoreboard calibration={calibration} biasSegments={biasSegments} watchSegments={watchSegments} epoch={scoreboardEpoch} />
 
         {/* ===== Live event log (collapsible) ===== */}
         <LiveLog />

@@ -15,18 +15,17 @@ function fmtEpoch(iso: string): string {
   return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' })
 }
 
-/** Corrected-vs-uncorrected cohort table: does the bias model actually help? */
-function BiasCohorts({ segments }: { segments: BiasSegment[] }) {
-  if (!segments.length) return null
-  const order: Record<string, number> = { corrected: 0, uncorrected: 1 }
-  const rows = [...segments].sort((a, b) => (order[a.label] ?? 9) - (order[b.label] ?? 9))
-  const anySettled = rows.some((r) => r.settled > 0)
-
+/** Shared cohort table: one row per segment, standard scorecard columns. */
+function CohortTable({ title, rows, amber, footer }: {
+  title: string
+  rows: BiasSegment[]
+  amber?: (label: string) => boolean
+  footer: string
+}) {
+  if (!rows.length) return null
   return (
     <div className="mt-5 border-t border-neutral-800 pt-4">
-      <div className="text-[11px] uppercase tracking-wider text-neutral-500 mb-2">
-        Bias model: corrected vs uncorrected cities
-      </div>
+      <div className="text-[11px] uppercase tracking-wider text-neutral-500 mb-2">{title}</div>
       <table className="w-full text-sm tabular-nums">
         <thead>
           <tr className="text-[11px] uppercase tracking-wider text-neutral-500 text-right">
@@ -42,7 +41,7 @@ function BiasCohorts({ segments }: { segments: BiasSegment[] }) {
           {rows.map((r) => (
             <tr key={r.label} className="text-right border-t border-neutral-800/60">
               <td className="text-left py-1.5">
-                <span className={r.label === 'uncorrected' ? 'text-amber-400' : 'text-neutral-200'}>
+                <span className={amber?.(r.label) ? 'text-amber-400' : 'text-neutral-200'}>
                   {r.label}
                 </span>
               </td>
@@ -64,12 +63,41 @@ function BiasCohorts({ segments }: { segments: BiasSegment[] }) {
           ))}
         </tbody>
       </table>
-      <p className="text-xs text-neutral-500 mt-2">
-        {anySettled
-          ? 'If "uncorrected" trails on win rate / P&L / Brier, the missing bias is leaking. Both should track each other if the market-gap guardrail is covering for it.'
-          : 'Tagged and waiting on settlement — win rate, P&L, and Brier per cohort fill in as these trades resolve.'}
-      </p>
+      <p className="text-xs text-neutral-500 mt-2">{footer}</p>
     </div>
+  )
+}
+
+/** Corrected-vs-uncorrected cohort table: does the bias model actually help? */
+function BiasCohorts({ segments }: { segments: BiasSegment[] }) {
+  if (!segments.length) return null
+  const order: Record<string, number> = { corrected: 0, uncorrected: 1 }
+  const rows = [...segments].sort((a, b) => (order[a.label] ?? 9) - (order[b.label] ?? 9))
+  const anySettled = rows.some((r) => r.settled > 0)
+  return (
+    <CohortTable
+      title="Bias model: corrected vs uncorrected cities"
+      rows={rows}
+      amber={(l) => l === 'uncorrected'}
+      footer={anySettled
+        ? 'If "uncorrected" trails on win rate / P&L / Brier, the missing bias is leaking. Both should track each other if the market-gap guardrail is covering for it.'
+        : 'Tagged and waiting on settlement — win rate, P&L, and Brier per cohort fill in as these trades resolve.'}
+    />
+  )
+}
+
+/** Probation split: the same active record with vs without the watch city (chicago). */
+function WatchCohorts({ segments }: { segments: BiasSegment[] }) {
+  if (!segments.length) return null
+  const rows = [...segments].sort((a, b) =>
+    (a.label.startsWith('all') ? 0 : 1) - (b.label.startsWith('all') ? 0 : 1))
+  return (
+    <CohortTable
+      title="Chicago probation: record with vs without it"
+      rows={rows}
+      amber={(l) => l.startsWith('all')}
+      footer={'Chicago failed one out-of-sample half in three straight backtests but stays live for evidence. If "ex-chicago" consistently beats "all cities" on P&L / Brier, chicago is hurting — park it.'}
+    />
   )
 }
 
@@ -86,9 +114,10 @@ function Metric({ label, value, hint, tone = 'neutral' }: {
   )
 }
 
-export function Scoreboard({ calibration, biasSegments = [], epoch = null }: {
+export function Scoreboard({ calibration, biasSegments = [], watchSegments = [], epoch = null }: {
   calibration: CalibrationSummary | null
   biasSegments?: BiasSegment[]
+  watchSegments?: BiasSegment[]
   epoch?: string | null
 }) {
   const settled = calibration?.total_with_outcome ?? 0
@@ -112,6 +141,7 @@ export function Scoreboard({ calibration, biasSegments = [], epoch = null }: {
             <div className="text-xs text-neutral-500 mt-2">
               This is the honest finish line: does the model beat the market price, <em>net of costs</em>?
             </div>
+            <WatchCohorts segments={watchSegments} />
             <BiasCohorts segments={biasSegments} />
           </div>
         ) : (
@@ -139,6 +169,7 @@ export function Scoreboard({ calibration, biasSegments = [], epoch = null }: {
             <p className="text-xs text-neutral-500 mt-4">
               The honest finish line: the predicted edge should be matched by the actual edge, net of costs.
             </p>
+            <WatchCohorts segments={watchSegments} />
             <BiasCohorts segments={biasSegments} />
           </>
         )}

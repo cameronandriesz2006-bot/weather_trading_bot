@@ -51,11 +51,47 @@ def get_recent_events(limit: int = 50) -> List[dict]:
     return event_log[-limit:]
 
 
+# Last time a full scan actually ran (the job itself fires on the fast in-window
+# cadence and thins itself out to the base cadence outside the window).
+_last_full_scan: Optional[datetime] = None
+
+
+def _in_trading_window() -> bool:
+    """True while ANY active city's station-local clock is inside the same-day trading
+    window (config WEATHER_WINDOW_START/END_HOUR). The publish-honest backtest puts the
+    whole capturable edge at ~16-17h local, so this is when scan latency matters."""
+    from backend.data.weather import station_local_now
+    for c in settings.WEATHER_CITIES.split(","):
+        c = c.strip()
+        if not c:
+            continue
+        try:
+            h = station_local_now(c).hour
+        except Exception:
+            continue
+        if settings.WEATHER_WINDOW_START_HOUR <= h < settings.WEATHER_WINDOW_END_HOUR:
+            return True
+    return False
+
+
 async def weather_scan_and_trade_job():
     """
     Background job: Scan weather temperature markets, generate signals, execute trades.
-    Runs every 5 minutes when WEATHER_ENABLED.
+    Fires every WEATHER_WINDOW_SCAN_INTERVAL_SECONDS (5 min); runs a full scan at that
+    cadence inside the 15-19h local window, and thins itself to the base
+    WEATHER_SCAN_INTERVAL_SECONDS (15 min) outside it. Rate-limit safe: the 90-min
+    forecast cache absorbs the extra scans' Open-Meteo load entirely.
     """
+    global _last_full_scan
+    now = datetime.utcnow()
+    if not _in_trading_window():
+        # Off-window tick: only scan on the base cadence (15s slack so a slightly-early
+        # trigger doesn't skip a whole interval).
+        if (_last_full_scan is not None
+                and (now - _last_full_scan).total_seconds() < settings.WEATHER_SCAN_INTERVAL_SECONDS - 15):
+            return
+    _last_full_scan = now
+
     log_event("info", "Scanning weather temperature markets...")
 
     try:
@@ -437,9 +473,12 @@ def start_scheduler():
         max_instances=1,
     )
 
-    # Weather trading jobs (gated by WEATHER_ENABLED)
+    # Weather trading jobs (gated by WEATHER_ENABLED). The job FIRES on the fast
+    # in-window cadence and thins itself to the base cadence off-window (see
+    # weather_scan_and_trade_job) — so the interval here is the fast one.
     if settings.WEATHER_ENABLED:
-        weather_scan_seconds = settings.WEATHER_SCAN_INTERVAL_SECONDS
+        weather_scan_seconds = min(settings.WEATHER_SCAN_INTERVAL_SECONDS,
+                                   settings.WEATHER_WINDOW_SCAN_INTERVAL_SECONDS)
 
         scheduler.add_job(
             weather_scan_and_trade_job,

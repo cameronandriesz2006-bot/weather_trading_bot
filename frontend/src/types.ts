@@ -143,6 +143,7 @@ export interface DashboardData {
   calibration: CalibrationSummary | null
   bias_segments?: BiasSegment[]
   city_segments?: BiasSegment[]   // active (still traded) vs retired cities (no longer rendered)
+  watch_segments?: BiasSegment[]  // probation split: record with vs without the watch city
   working_orders?: WorkingOrder[]   // resting maker limit orders
   weather_signals: WeatherSignal[]
   weather_forecasts: WeatherForecast[]

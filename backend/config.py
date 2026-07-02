@@ -63,6 +63,15 @@ class Settings(BaseSettings):
     # free-tier daily quota. Daily-temp markets settle once/day, so 15-min scanning is plenty;
     # the 90-min forecast cache (_CACHE_TTL in weather.py) absorbs repeated scans so this
     # mainly throttles the per-scan Meteostat/Polymarket/order-book calls.
+    # In-window scan cadence (Phase 2, 2026-07-02): the publish-honest backtest says the
+    # edge lives at ~16h local and is dead by 18-19h, so inside 15:00-19:00 STATION-LOCAL
+    # (any active city) the scan runs every 5 min instead of 15. Rate-limit safe: the
+    # 90-min forecast cache means ZERO extra Open-Meteo calls (the quota that locked us
+    # out 2026-06-29); the extra load is only NWS obs (~12/hr/city, no quota) + one
+    # Gamma/CLOB round per scan. Off-window scans stay at WEATHER_SCAN_INTERVAL_SECONDS.
+    WEATHER_WINDOW_SCAN_INTERVAL_SECONDS: int = 300
+    WEATHER_WINDOW_START_HOUR: int = 15   # station-local, inclusive
+    WEATHER_WINDOW_END_HOUR: int = 19     # station-local, exclusive
     WEATHER_SETTLEMENT_INTERVAL_SECONDS: int = 1800  # 30 min
     # Gap (seconds) inserted between consecutive COLD-cache forecast fetches in the
     # per-scan pre-warm loop, so the heavy 3-model blend requests don't burst all 6
@@ -235,6 +244,11 @@ class Settings(BaseSettings):
     # _scoreboard_epoch + the three aggregations) for the next model change, when a soft
     # hide may be preferable to archiving. Empty string => score whatever is in the DB.
     SCOREBOARD_EPOCH: str = ""
+    # Probation split (2026-07-02): this city stays LIVE but the scoreboard shows the
+    # active-city record twice — with it and without it — because it keeps failing one
+    # OOS half in backtests (3x for chicago) while the user wants live evidence, not a
+    # cut. Empty string disables the split.
+    SCOREBOARD_WATCH_CITY: str = "chicago"
 
     # Per-station bias correction. Raw GFS has repeatable per-station offsets the
     # market has already priced in (e.g. ~2F cold on NYC overnight lows); left

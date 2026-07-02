@@ -55,7 +55,15 @@ test**: the one OOS-robust seam the backtests found — the same-day inland afte
 
 **Deployed config for the test (in `config.py` defaults unless noted):**
 - **Cities = `denver,chicago,atlanta`** — the Brier-confirmed H≥16 post-high cells (atlanta added
-  2026-06-30 after it cleared the same OOS bar; chicago kept on watch — it failed one OOS half).
+  2026-06-30 after it cleared the same OOS bar; chicago failed one OOS half in THREE straight
+  backtests but stays live **on probation** by user decision 2026-07-02: the scoreboard shows the
+  record with AND without it (`SCOREBOARD_WATCH_CITY`, `watch_segments`, dashboard "Chicago
+  probation" table) — if ex-chicago consistently wins, park it).
+- **In-window 5-min scans** (2026-07-02): the scan job fires every `WEATHER_WINDOW_SCAN_INTERVAL_
+  SECONDS` (300) and runs full scans at that cadence while any active city is inside 15-19h
+  station-local (`WEATHER_WINDOW_START/END_HOUR`), thinning to the base 15-min cadence off-window.
+  Rate-limit safe: the 90-min forecast cache absorbs all extra Open-Meteo load (zero new calls —
+  that quota caused the 2026-06-29 lockout); extra load is only NWS obs + Gamma/CLOB, no quotas.
   Coastal (`tokyo/paris/hong_kong`) + `nyc` PARKED (their backtest "profit" was a variance/Asia-leak
   fluke); dallas/austin screened and REJECTED. All parked/cut cities stay in `CITY_CONFIG` so open
   positions still settle.

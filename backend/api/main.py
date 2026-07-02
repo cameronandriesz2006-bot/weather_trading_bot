@@ -228,6 +228,8 @@ class DashboardData(BaseModel):
     calibration: Optional[CalibrationSummary] = None
     bias_segments: List[BiasSegment] = []
     city_segments: List[BiasSegment] = []   # active (still traded) vs retired cities
+    # Probation split: the active record WITH vs WITHOUT the watch city (chicago)
+    watch_segments: List[BiasSegment] = []
     working_orders: List[WorkingOrderResponse] = []   # resting maker limit orders
     weather_signals: List[WeatherSignalResponse] = []
     weather_forecasts: List[WeatherForecastResponse] = []
@@ -540,6 +542,32 @@ def _compute_city_status_segments(db: Session) -> List[BiasSegment]:
             continue  # non-weather / unparseable slug
         buckets["active" if parsed[0] in active else "retired"].append(t)
     return [_segment_from_trades(label, buckets[label]) for label in ("active", "retired")]
+
+
+def _compute_watch_city_segments(db: Session) -> List[BiasSegment]:
+    """Probation split for the watch city (config.SCOREBOARD_WATCH_CITY): the same
+    active-city, post-epoch scorecard TWICE — once with the watch city included, once
+    without — so its contribution to the record is visible at a glance. Added
+    2026-07-02: chicago keeps failing one OOS half in backtests (3x) but stays live
+    for evidence; this split answers 'is chicago helping or hurting?' continuously."""
+    from backend.data.weather_markets import parse_event_slug
+    watch = (settings.SCOREBOARD_WATCH_CITY or "").strip()
+    if not watch:
+        return []
+    active = _active_city_keys()
+    epoch = _scoreboard_epoch()
+    q = db.query(Trade)
+    if epoch is not None:
+        q = q.filter(Trade.timestamp >= epoch)
+    tagged = []
+    for t in q.all():
+        parsed = parse_event_slug(t.event_slug or "")
+        if parsed and parsed[0] in active:
+            tagged.append((parsed[0], t))
+    return [
+        _segment_from_trades(f"all cities (incl {watch})", [t for _, t in tagged]),
+        _segment_from_trades(f"ex-{watch}", [t for c, t in tagged if c != watch]),
+    ]
 
 
 def _compute_calibration_summary(db: Session) -> Optional[CalibrationSummary]:
@@ -1066,6 +1094,8 @@ async def get_dashboard(db: Session = Depends(get_db)):
     bias_segments = _compute_bias_segments(db)
     # Active (still traded) vs retired cities — the active-cities filter
     city_segments = _compute_city_status_segments(db)
+    # Probation split: active record with vs without the watch city (chicago)
+    watch_segments = _compute_watch_city_segments(db)
 
     # Weather data (if enabled)
     weather_signals_data = []
@@ -1108,6 +1138,7 @@ async def get_dashboard(db: Session = Depends(get_db)):
         calibration=calibration,
         bias_segments=bias_segments,
         city_segments=city_segments,
+        watch_segments=watch_segments,
         working_orders=working_orders,
         weather_signals=weather_signals_data,
         weather_forecasts=weather_forecasts_data,
