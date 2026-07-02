@@ -126,6 +126,17 @@ class Settings(BaseSettings):
     WEATHER_MIN_LIQUIDITY: float = 500.0
     WEATHER_MAX_REL_SPREAD: float = 0.10
     WEATHER_MAX_BOOK_FRACTION: float = 0.10
+    # POST-EXTREME relaxation (2026-07-02): once the day's extreme is observed-in
+    # (extreme_in — the only regime we trade), thin/wide books are the NORM: makers
+    # pull quotes after the high sets, and 2026-07-01 showed $46-450 books with
+    # 25-164% spreads blocking every real candidate. In that regime the anchor is
+    # the thermometer (settlement-grade floor + honesty monitor), entry is the real
+    # VWAP walk (net edge already pays the spread), and MAX_BOOK_FRACTION scales the
+    # stake to the book ($60 book -> ~$6 bet) — so the hard floor/spread gates add
+    # no safety, only lost evidence. Day-ahead/pre-extreme keep the strict values
+    # above (there the wide-book mirage risk is real and we have no anchor).
+    WEATHER_EXTREME_MIN_LIQUIDITY: float = 50.0
+    WEATHER_EXTREME_MAX_REL_SPREAD: float = 0.60
     # Minimum lifetime TRADED volume ($). Distinct from liquidity (resting quotes):
     # a market can show ~$900 of resting orders while having traded almost nothing,
     # in which case those quotes are likely a lone market maker that can vanish and

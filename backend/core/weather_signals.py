@@ -91,13 +91,21 @@ class WeatherTradingSignal:
         effective entry price is within the cap, the market is real enough to trade
         (enough resting liquidity, enough actually-traded volume, tight-enough
         relative spread — Layer 1), AND our forecast mean isn't wildly off the
-        market-implied mean (the market-gap guardrail)."""
+        market-implied mean (the market-gap guardrail).
+
+        The liquidity/spread gates are REGIME-SCOPED: post-extreme (extreme_in) books
+        are structurally thin and wide, so the relaxed WEATHER_EXTREME_* values apply
+        there and MAX_BOOK_FRACTION scales the stake to the book instead (see config)."""
+        min_liq = (settings.WEATHER_EXTREME_MIN_LIQUIDITY if self.extreme_in
+                   else settings.WEATHER_MIN_LIQUIDITY)
+        max_rel = (settings.WEATHER_EXTREME_MAX_REL_SPREAD if self.extreme_in
+                   else settings.WEATHER_MAX_REL_SPREAD)
         return (
             self.net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
             and 0 < self.entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
-            and self.market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
+            and self.market.liquidity >= min_liq
             and self.market.volume >= settings.WEATHER_MIN_VOLUME
-            and self.rel_spread <= settings.WEATHER_MAX_REL_SPREAD
+            and self.rel_spread <= max_rel
             and self.market_gap_ok
             and self.post_extreme_ok
         )
@@ -402,12 +410,16 @@ async def generate_weather_signal(
     post_extreme_ok = (not settings.WEATHER_REQUIRE_EXTREME_IN) or extreme_in
 
     # Build reasoning — mirror passes_threshold exactly so the recorded note
-    # explains precisely why a bucket was or wasn't actionable.
+    # explains precisely why a bucket was or wasn't actionable. Liquidity/spread
+    # gates are regime-scoped: relaxed once the extreme is in (thin/wide post-high
+    # books are the norm; the book-fraction cap scales the stake instead).
+    min_liq = settings.WEATHER_EXTREME_MIN_LIQUIDITY if extreme_in else settings.WEATHER_MIN_LIQUIDITY
+    max_rel = settings.WEATHER_EXTREME_MAX_REL_SPREAD if extreme_in else settings.WEATHER_MAX_REL_SPREAD
     actionable = (net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
                   and 0 < entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
-                  and market.liquidity >= settings.WEATHER_MIN_LIQUIDITY
+                  and market.liquidity >= min_liq
                   and market.volume >= settings.WEATHER_MIN_VOLUME
-                  and rel_spread <= settings.WEATHER_MAX_REL_SPREAD
+                  and rel_spread <= max_rel
                   and market_gap_ok
                   and post_extreme_ok)
     filter_notes = []
@@ -418,12 +430,12 @@ async def generate_weather_signal(
         filter_notes.append(f"entry {entry_price:.0%} > {settings.WEATHER_MAX_ENTRY_PRICE:.0%}")
     if net_edge < settings.WEATHER_MIN_EDGE_THRESHOLD:
         filter_notes.append(f"net edge {net_edge:.1%} < {settings.WEATHER_MIN_EDGE_THRESHOLD:.0%}")
-    if market.liquidity < settings.WEATHER_MIN_LIQUIDITY:
-        filter_notes.append(f"liq ${market.liquidity:.0f} < ${settings.WEATHER_MIN_LIQUIDITY:.0f}")
+    if market.liquidity < min_liq:
+        filter_notes.append(f"liq ${market.liquidity:.0f} < ${min_liq:.0f}")
     if market.volume < settings.WEATHER_MIN_VOLUME:
         filter_notes.append(f"vol ${market.volume:.0f} < ${settings.WEATHER_MIN_VOLUME:.0f}")
-    if rel_spread > settings.WEATHER_MAX_REL_SPREAD:
-        filter_notes.append(f"rel-spread {rel_spread:.0%} > {settings.WEATHER_MAX_REL_SPREAD:.0%}")
+    if rel_spread > max_rel:
+        filter_notes.append(f"rel-spread {rel_spread:.0%} > {max_rel:.0%}")
     if not market_gap_ok:
         filter_notes.append(
             f"market-gap {market_gap:.1f}{u} > {gap_threshold:.1f}{u} "
