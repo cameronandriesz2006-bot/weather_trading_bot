@@ -815,8 +815,64 @@ async def fetch_nws_observed_temperature(city_key: str, target_date: Optional[da
 _METEOSTAT_DAILY_URL = "https://d.meteostat.net/app/proxy/stations/daily"
 _METEOSTAT_HOURLY_URL = "https://d.meteostat.net/app/proxy/stations/hourly"
 _METEOSTAT_HEADERS = {"User-Agent": "Mozilla/5.0"}  # the proxy 403s a bare client
+_NWS_OBS_URL = "https://api.weather.gov/stations/{station}/observations"
+_NWS_HEADERS = {"User-Agent": "(weather-trading-bot simulation, contact@example.com)"}
 _observed_cache: Dict[str, tuple] = {}   # key -> (timestamp, value-or-None)
-_OBSERVED_TTL = 900  # 15 min
+_OBSERVED_TTL = 300  # 5 min — the NWS feed updates ~5-20 min; a 15-min TTL could feed
+                     # a whole scan cycle data that is one full scan stale
+
+
+def _wu_round_f(temp_c: float) -> float:
+    """°C ob -> the integer °F Wunderground displays for it (round half UP).
+    The markets settle on 'the highest temperature recorded' as shown by
+    Wunderground, which is the max over PER-OB integer °F values — so the
+    running extreme must round each ob BEFORE taking max/min (KBKF 2026-07-01:
+    continuous max 89.6°F, settled bucket 90-91 because 89.6 displays as 90)."""
+    return float(math.floor(temp_c * 9.0 / 5.0 + 32.0 + 0.5))
+
+
+async def _nws_observed_extreme(
+    client: httpx.AsyncClient, station: str, tz_name: str, target_date: date, metric: str
+) -> Optional[float]:
+    """Observed extreme SO FAR on ``target_date`` (station-local) from the NWS
+    station feed — the settlement-grade source. This is the same METAR/5-min
+    ASOS data Wunderground resolves on, published within ~5-20 min (KORD/KATL
+    report 5-min obs; KBKF hourly), vs Meteostat's hourly proxy which serves
+    lagged/model-interpolated values intraday and revises them hours later
+    (2026-07-01: it fed a floor 1.3-3.4°F below reality in all 3 cities).
+    Values are per-ob Wunderground-rounded integer °F, so the returned bound
+    IS the number the market settles against. None if no usable obs (caller
+    falls back to Meteostat). NWS keeps ~7 days, so finished-day reads within
+    a week also resolve here."""
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(tz_name)
+    day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
+    r = await client.get(
+        _NWS_OBS_URL.format(station=station),
+        params={
+            "start": day_start.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": (day_start + timedelta(days=1)).astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "limit": 500,
+        },
+        headers=_NWS_HEADERS,
+    )
+    r.raise_for_status()
+    temps_f = []
+    for obs in r.json().get("features", []) or []:
+        props = obs.get("properties", {})
+        temp_c = (props.get("temperature") or {}).get("value")
+        ts = props.get("timestamp")
+        if temp_c is None or not ts:
+            continue
+        try:
+            local_dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(tz)
+        except ValueError:
+            continue
+        if local_dt.date() == target_date:  # UTC window over-fetches; keep the local day only
+            temps_f.append(_wu_round_f(float(temp_c)))
+    if not temps_f:
+        return None
+    return max(temps_f) if metric == "high" else min(temps_f)
 
 # Only TRUST the observed-so-far bound once the relevant extreme has typically
 # occurred in the station's local day: the daily HIGH is reached mid-afternoon,
@@ -881,20 +937,23 @@ async def fetch_observed_extreme(
     value. Returns None when it can't be trusted (no obs station, future date, or
     fetch failure) so callers fall back to the uncensored forecast.
 
-    Source depends on whether the local day is still unfolding:
-      - IN-PROGRESS day: running max/min over the station's HOURLY obs up to the
-        current local hour. The DAILY tmax/tmin aggregate is not published until the
-        day is over, so reading it intraday returns None and the post-extreme gate
-        never opens in the afternoon — which is precisely the window the same-day
-        strategy trades. Hourly obs is available intraday and is the same
-        running-extreme the OOS backtest priced on.
-      - FINISHED past day: the DAILY aggregate, now the authoritative final extreme.
+    Source priority:
+      1. NWS station feed (US cities with ``nws_station``) — settlement-grade: the
+         same METAR/ASOS obs Wunderground resolves on, per-ob rounded to integer °F
+         exactly like the resolution source, ~5-20 min behind real time. Works for
+         both the in-progress day and finished days back ~1 week.
+      2. Meteostat fallback (°C cities / NWS outage): hourly running-extreme on the
+         in-progress day, daily aggregate on finished days.
 
-    Meteostat is observation-based, so it never OVERSTATES the extreme; if it lags
-    a couple hours the bound is merely weaker (safe), never wrong — which is also
-    why it's harmless before the diurnal peak and strongest in the evening, exactly
-    when we want it. We only count hours <= the current local hour so a model-filled
-    FUTURE hour (the proxy backfills the rest of the calendar day) can't leak in.
+    CAUTION (learned 2026-07-01): a lagged floor is NOT harmless here. It is safe
+    for the censoring bound (a weak bound just censors less), but the same value
+    feeds the observed-anchored nowcast CENTER with intraday σ of 0.2-0.4°F — there
+    a stale/low reading is a confidently WRONG price, not a weak one. Meteostat's
+    intraday hourly serves lagged, later-revised values (Jul 1: 1.3-3.4°F low in
+    all 3 cities → two fake "edges" that settlement proved would have lost). Only
+    the cost/liquidity gates prevented losses. Hence NWS first; the Meteostat path
+    survives only as a fallback and we only count hours <= the current local hour
+    there so a model-filled FUTURE hour can't leak in.
     """
     if city_key not in CITY_CONFIG:
         return None
@@ -927,6 +986,22 @@ async def fetch_observed_extreme(
     in_progress = target_date == local_date
     unit = CITY_CONFIG[city_key].get("unit", "F")
     value: Optional[float] = None
+
+    # Settlement-grade source first (US cities): the NWS station feed.
+    icao = CITY_CONFIG[city_key].get("nws_station")
+    if icao and unit == "F":
+        try:
+            async with httpx.AsyncClient(timeout=15.0) as client:
+                value = await _nws_observed_extreme(
+                    client, icao, CITY_CONFIG[city_key].get("tz") or "UTC", target_date, metric
+                )
+        except Exception as e:
+            logger.warning(f"NWS observed-extreme fetch failed for {city_key}/{metric}, "
+                           f"falling back to Meteostat: {e}")
+        if value is not None:
+            _observed_cache[key] = (now, value)
+            return value
+
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:
             if in_progress:

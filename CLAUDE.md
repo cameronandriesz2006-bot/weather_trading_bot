@@ -95,14 +95,19 @@ optional arb scanner · 9 gated go-live.
   °C single-degree, sub-zero, open tails. Same-day market kept until each station's LOCAL day ends
   (prune by `station_local_now(city).date()`, NOT the server's UTC `date.today()` — the server is
   UTC and used to drop the still-open same-local-day market at 00:00 UTC = ~6pm local).
-- **Post-extreme gate opens intraday** (2026-07-01 fix, `fetch_observed_extreme`) — the observed
-  floor/ceiling now comes from Meteostat **hourly** obs (running max/min over elapsed local hours)
-  on the in-progress day, not the **daily** aggregate (which isn't published until the day is over,
-  so the gate never opened in the 16-18h trading window → the Edge-2 test had traded nothing).
-  Finished days keep the daily aggregate. This + the local-date fix are why the bot can finally
-  reach the window. Execution-honest backtest (`edge2_execution_honest.py`): the edge is real &
-  OOS-robust at action-hours 16-17 and decays to nothing by 18-20 as the market rails out — so it's
-  capturable only if we act within ~1-2h of the high; real-fill P&L in the live window is the go/no-go.
+- **Observed floor is settlement-grade NWS, not Meteostat** (2026-07-02 fix, `_nws_observed_extreme`
+  in `weather.py`) — the intraday floor/ceiling for US cities now comes from the NWS station feed
+  (same METAR/5-min ASOS obs Wunderground settles on, ~5-20 min latency), with each ob rounded to
+  integer °F the way Wunderground displays it (per-ob round-half-up, THEN max — KBKF Jul 1:
+  continuous 89.6°F settled as 90). Validated 54/54 city-days in the settled bucket (Jun 10-30 +
+  Jul 1). Meteostat survives only as fallback: its intraday hourly serves lagged/revised values
+  (Jul 1: floor 1.3-3.4°F low in all 3 cities → two fake "edges" that would have LOST; only the
+  cost/liquidity gates saved it). Lesson: a lagged floor is safe as a censoring BOUND but
+  confidently wrong as the nowcast ANCHOR (σ 0.2-0.4°F). History of the gate fixes (UTC-date prune,
+  hourly-obs) in git log ca5f637/a3ceee5. The execution-honest backtest (`edge2_execution_honest.py`)
+  says the edge lives at action-hours 16-17 and rails out by 18-20 — but it consumed ARCHIVED obs
+  (an obs-vintage look-ahead); it must be re-run with publish-time-honest METAR data before any
+  P&L is trusted.
 - **Station/timezone** — `CITY_CONFIG` lat/lon at the settlement station; `timezone=auto` so the
   high/low is the local-day extreme.
 - **Honest probability** — fitted Normal over ensemble mean/spread, integrated over the bucket's
