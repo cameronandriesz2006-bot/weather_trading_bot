@@ -35,9 +35,11 @@ safeguard exists to only bet when we genuinely know something:
    the final high below (or low above) what's already on the thermometer; plus an intraday-σ
    schedule + observed-anchored pricing center so confidence tracks reality through the day.
 7. **Post-extreme gate** (`WEATHER_REQUIRE_EXTREME_IN`) — only act once the day's extreme is
-   actually in (observed floor/ceiling active: high ≥16h, low ≥10h local). Never bet day-ahead or
-   pre-extreme, where the forecast σ is too flat to beat the market. Doubles as the safety gate
-   that, with the maker leg off, stops day-ahead buckets from being taken.
+   actually in (observed floor/ceiling active: high ≥16h, low ≥10h local) AND the newest station
+   ob is fresh (≤`WEATHER_OBS_MAX_STALENESS_MINUTES`, 45 — a silent station/feed gap must not
+   price with post-extreme confidence). Never bet day-ahead or pre-extreme, where the forecast σ
+   is too flat to beat the market. Doubles as the safety gate that, with the maker leg off, stops
+   day-ahead buckets from being taken.
 
 ## Hard constraints (do not violate)
 
@@ -105,15 +107,25 @@ optional arb scanner · 9 gated go-live.
   °C single-degree, sub-zero, open tails. Same-day market kept until each station's LOCAL day ends
   (prune by `station_local_now(city).date()`, NOT the server's UTC `date.today()` — the server is
   UTC and used to drop the still-open same-local-day market at 00:00 UTC = ~6pm local).
-- **Observed floor is settlement-grade NWS, not Meteostat** (2026-07-02 fix, `_nws_observed_extreme`
-  in `weather.py`) — the intraday floor/ceiling for US cities now comes from the NWS station feed
-  (same METAR/5-min ASOS obs Wunderground settles on, ~5-20 min latency), with each ob rounded to
-  integer °F the way Wunderground displays it (per-ob round-half-up, THEN max — KBKF Jul 1:
-  continuous 89.6°F settled as 90). Validated 54/54 city-days in the settled bucket (Jun 10-30 +
-  Jul 1). Meteostat survives only as fallback: its intraday hourly serves lagged/revised values
-  (Jul 1: floor 1.3-3.4°F low in all 3 cities → two fake "edges" that would have LOST; only the
-  cost/liquidity gates saved it). Lesson: a lagged floor is safe as a censoring BOUND but
-  confidently wrong as the nowcast ANCHOR (σ 0.2-0.4°F). History of the gate fixes (UTC-date prune,
+- **Observed floor is a settlement-grade 3-feed METAR union + freshness gate** (2026-07-03,
+  `_merged_observed_extreme` in `weather.py`) — the intraday floor/ceiling for US cities is the
+  UNION of NWS API + IEM obhistory + aviationweather.gov (all carry the same METARs Wunderground
+  settles on; merged freshness ~2-8 min), each ob rounded to integer °F the way Wunderground
+  displays it (per-ob round-half-up, THEN max — KBKF Jul 1: continuous 89.6°F settled as 90).
+  Multi-feed because **api.weather.gov silently drops obs**: on Jul 2 (first Edge-2 trades, 1W/3L
+  −$86) it was missing KATL 20:52Z=98°F — the ob Atlanta settled on — and served a 2.5h-stale KBKF
+  picture while a 22:09Z SPECI (89.6→90) 21 min pre-trade had already printed the settling value;
+  the bot priced σ 0.5-0.7°F off the stale anchor and lost 3 trades the live-thermometer-watching
+  market won (the one fresh-anchor trade, Chicago, won). Hence **extreme_in now also requires the
+  newest ob ≤ `WEATHER_OBS_MAX_STALENESS_MINUTES` (45)** — stale/unverifiable anchor ⇒ not in the
+  post-extreme regime (no taker entry, strict gates); reasoning strings record `[obs floor X @Nm]`.
+  IEM filter: it lists 5-min AUTO rows but only decodes `tmpf` on true METARs/SPECIs, so
+  `tmpf is not None` is the settlement-grade filter. Union validated against all known settled
+  buckets (Jul 1-2). Old NWS-only floor validated 54/54 city-days (Jun 10-30 + Jul 1).
+  Meteostat survives only as fallback (ob-age unknown ⇒ gate stays closed): its intraday hourly
+  serves lagged/revised values (Jul 1: floor 1.3-3.4°F low in all 3 cities → two fake "edges" that
+  would have LOST; only the cost/liquidity gates saved it). Lesson, twice-learned: a lagged floor
+  is safe as a censoring BOUND but confidently wrong as the nowcast ANCHOR (σ 0.2-0.4°F). History of the gate fixes (UTC-date prune,
   hourly-obs) in git log ca5f637/a3ceee5. The execution-honest backtest (`edge2_execution_honest.py`)
   says the edge lives at action-hours 16-17 and rails out by 18-20 — but it consumed ARCHIVED obs
   (an obs-vintage look-ahead). The publish-time-honest re-run (`edge2_publish_honest.py`,

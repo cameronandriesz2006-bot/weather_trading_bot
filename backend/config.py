@@ -193,6 +193,13 @@ class Settings(BaseSettings):
     # bucket. This is ALSO the safety gate that, with WEATHER_MAKER_ENABLED off, stops
     # day-ahead signals from falling through to the taker path. Flip False to revert.
     WEATHER_REQUIRE_EXTREME_IN: bool = True
+    # The extreme only counts as "in" if the NEWEST settlement-grade ob at the station
+    # is at most this old (2026-07-02 autopsy: every losing trade that day priced with
+    # post-extreme σ off an anchor 1-2.5h stale during a feed gap, while the market saw
+    # the live thermometer; the one fresh-anchor trade won). Hourly METAR cadence means
+    # the age naturally cycles ~5-65 min: 45 keeps most of each hour tradable and blocks
+    # exactly the tail where we're blindest. A SPECI (weather change) resets it early.
+    WEATHER_OBS_MAX_STALENESS_MINUTES: int = 45
 
     # Forecast calibration (Phase 4) — turn the raw ensemble into an honest
     # probability. We fit a Normal to the ensemble mean/spread and WIDEN the

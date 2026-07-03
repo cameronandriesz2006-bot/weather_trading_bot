@@ -1,10 +1,11 @@
 """Weather data fetcher using Open-Meteo Ensemble API and NWS observations."""
+import asyncio
 import httpx
 import json
 import logging
 import math
 from dataclasses import dataclass, field
-from datetime import datetime, date, timedelta
+from datetime import datetime, date, timedelta, timezone
 from pathlib import Path
 from typing import Dict, List, Optional
 import statistics
@@ -817,69 +818,157 @@ _METEOSTAT_HOURLY_URL = "https://d.meteostat.net/app/proxy/stations/hourly"
 _METEOSTAT_HEADERS = {"User-Agent": "Mozilla/5.0"}  # the proxy 403s a bare client
 _NWS_OBS_URL = "https://api.weather.gov/stations/{station}/observations"
 _NWS_HEADERS = {"User-Agent": "(weather-trading-bot simulation, contact@example.com)"}
-_observed_cache: Dict[str, tuple] = {}   # key -> (timestamp, value-or-None)
+_IEM_OBHISTORY_URL = "https://mesonet.agron.iastate.edu/api/1/obhistory.json"
+_AWC_METAR_URL = "https://aviationweather.gov/api/data/metar"
+# IEM addresses ASOS stations as (id-without-K, state network).
+_IEM_NETWORK = {"KLGA": "NY_ASOS", "KORD": "IL_ASOS", "KMIA": "FL_ASOS",
+                "KLAX": "CA_ASOS", "KBKF": "CO_ASOS", "KATL": "GA_ASOS"}
+_observed_cache: Dict[str, tuple] = {}   # key -> (timestamp, value-or-None, latest-ob-utc-or-None)
 _OBSERVED_TTL = 300  # 5 min — the NWS feed updates ~5-20 min; a 15-min TTL could feed
                      # a whole scan cycle data that is one full scan stale
 
 
-def _wu_round_f(temp_c: float) -> float:
-    """°C ob -> the integer °F Wunderground displays for it (round half UP).
+def _wu_round_from_f(temp_f: float) -> float:
+    """°F ob -> the integer °F Wunderground displays for it (round half UP).
     The markets settle on 'the highest temperature recorded' as shown by
     Wunderground, which is the max over PER-OB integer °F values — so the
     running extreme must round each ob BEFORE taking max/min (KBKF 2026-07-01:
     continuous max 89.6°F, settled bucket 90-91 because 89.6 displays as 90)."""
-    return float(math.floor(temp_c * 9.0 / 5.0 + 32.0 + 0.5))
+    return float(math.floor(temp_f + 0.5))
 
 
-async def _nws_observed_extreme(
-    client: httpx.AsyncClient, station: str, tz_name: str, target_date: date, metric: str
-) -> Optional[float]:
-    """Observed extreme SO FAR on ``target_date`` (station-local) from the NWS
-    station feed — the settlement-grade source. This is the same METAR/5-min
-    ASOS data Wunderground resolves on, published within ~5-20 min (KORD/KATL
-    report 5-min obs; KBKF hourly), vs Meteostat's hourly proxy which serves
-    lagged/model-interpolated values intraday and revises them hours later
-    (2026-07-01: it fed a floor 1.3-3.4°F below reality in all 3 cities).
-    Values are per-ob Wunderground-rounded integer °F, so the returned bound
-    IS the number the market settles against. None if no usable obs (caller
-    falls back to Meteostat). NWS keeps ~7 days, so finished-day reads within
-    a week also resolve here."""
-    from zoneinfo import ZoneInfo
-    tz = ZoneInfo(tz_name)
-    day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
+def _wu_round_f(temp_c: float) -> float:
+    """°C ob -> the integer °F Wunderground displays for it (see _wu_round_from_f)."""
+    return _wu_round_from_f(temp_c * 9.0 / 5.0 + 32.0)
+
+
+async def _nws_metar_obs(
+    client: httpx.AsyncClient, station: str, start_utc: datetime, end_utc: datetime
+) -> Dict[datetime, float]:
+    """{ob UTC time (minute) -> °F} from the NWS API. METARs ONLY (rawMessage
+    present): the API interleaves a 5-min synoptic feed whose readings can exceed
+    anything Wunderground displays (KATL 2026-06-30: 96.8F in the 5-min feed,
+    settled bucket 94-95) — using them would push the floor ABOVE settlement truth
+    and wrongly kill the true bucket. Wunderground resolves on displayed METAR obs;
+    so must the floor."""
     r = await client.get(
         _NWS_OBS_URL.format(station=station),
         params={
-            "start": day_start.astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
-            "end": (day_start + timedelta(days=1)).astimezone(ZoneInfo("UTC")).strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "start": start_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "end": end_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
             "limit": 500,
         },
         headers=_NWS_HEADERS,
     )
     r.raise_for_status()
-    temps_f = []
+    out: Dict[datetime, float] = {}
     for obs in r.json().get("features", []) or []:
         props = obs.get("properties", {})
         temp_c = (props.get("temperature") or {}).get("value")
         ts = props.get("timestamp")
-        if temp_c is None or not ts:
-            continue
-        # METARs ONLY (rawMessage present). The API interleaves a 5-min synoptic feed
-        # whose readings can exceed anything Wunderground displays (KATL 2026-06-30:
-        # 96.8F in the 5-min feed, settled bucket 94-95) — using them would push the
-        # floor ABOVE settlement truth and wrongly kill the true bucket. Wunderground
-        # resolves on displayed METAR obs; so must the floor.
-        if not props.get("rawMessage"):
+        if temp_c is None or not ts or not props.get("rawMessage"):
             continue
         try:
-            local_dt = datetime.fromisoformat(ts.replace("Z", "+00:00")).astimezone(tz)
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
         except ValueError:
             continue
-        if local_dt.date() == target_date:  # UTC window over-fetches; keep the local day only
-            temps_f.append(_wu_round_f(float(temp_c)))
-    if not temps_f:
-        return None
-    return max(temps_f) if metric == "high" else min(temps_f)
+        out[dt.replace(second=0, microsecond=0)] = float(temp_c) * 9.0 / 5.0 + 32.0
+    return out
+
+
+async def _iem_metar_obs(
+    client: httpx.AsyncClient, station: str, target_date: date
+) -> Dict[datetime, float]:
+    """{ob UTC time (minute) -> °F} from IEM's obhistory (NOAAPort ingest). IEM
+    lists the 5-min AUTO reports too but only decodes tmpf on true hourly METARs
+    and SPECIs — so 'tmpf is not None' is exactly the settlement-grade filter.
+    tmpf carries the T-group tenths directly in °F (no unit conversion)."""
+    network = _IEM_NETWORK.get(station)
+    if not network:
+        return {}
+    r = await client.get(_IEM_OBHISTORY_URL, params={
+        "station": station[1:], "network": network, "date": target_date.isoformat(),
+    })
+    r.raise_for_status()
+    out: Dict[datetime, float] = {}
+    for row in r.json().get("data", []) or []:
+        temp_f, ts = row.get("tmpf"), row.get("utc_valid")
+        if temp_f is None or not ts or not row.get("raw"):
+            continue
+        try:
+            dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        out[dt.replace(second=0, microsecond=0)] = float(temp_f)
+    return out
+
+
+async def _awc_metar_obs(
+    client: httpx.AsyncClient, station: str, lookback_hours: float
+) -> Dict[datetime, float]:
+    """{ob UTC time (minute) -> °F} from aviationweather.gov — natively METAR/SPECI
+    only, and typically the freshest of the three feeds (a new ob shows up within
+    ~2-8 min of filing vs 5-20+ min on api.weather.gov). Recent window only."""
+    if lookback_hours > 48:
+        return {}
+    r = await client.get(_AWC_METAR_URL, params={
+        "ids": station, "format": "json", "hours": max(1, int(lookback_hours) + 1),
+    })
+    r.raise_for_status()
+    out: Dict[datetime, float] = {}
+    for m in r.json() or []:
+        temp_c, epoch = m.get("temp"), m.get("obsTime")
+        if temp_c is None or not epoch:
+            continue
+        dt = datetime.fromtimestamp(epoch, tz=timezone.utc)
+        out[dt.replace(second=0, microsecond=0)] = float(temp_c) * 9.0 / 5.0 + 32.0
+    return out
+
+
+async def _merged_observed_extreme(
+    client: httpx.AsyncClient, station: str, tz_name: str, target_date: date, metric: str
+) -> tuple:
+    """(observed extreme SO FAR, newest-ob UTC time) on ``target_date`` (station-
+    local) from the UNION of three feeds carrying the same settlement-grade METARs:
+    NWS API + IEM + AWC. Multi-feed because api.weather.gov silently DROPS obs
+    (2026-07-02: it was missing KATL 20:52Z=98°F — the ob the market settled on —
+    and served a 2.5h-stale KBKF picture while a SPECI 21 min before our trade had
+    already printed the settling 90; all of it was on NOAAPort and visible via
+    IEM/AWC the whole time). Values are per-ob Wunderground-rounded integer °F, so
+    the returned bound IS the number the market settles against. The newest-ob time
+    feeds the staleness gate: a station that stops reporting (KBKF is a military
+    field and genuinely gaps) must block the tight post-extreme σ, not feed it.
+    (None, None) if no usable obs anywhere (caller falls back to Meteostat)."""
+    from zoneinfo import ZoneInfo
+    tz = ZoneInfo(tz_name)
+    day_start = datetime(target_date.year, target_date.month, target_date.day, tzinfo=tz)
+    start_utc = day_start.astimezone(timezone.utc)
+    end_utc = (day_start + timedelta(days=1)).astimezone(timezone.utc)
+    lookback_h = (datetime.now(timezone.utc) - start_utc).total_seconds() / 3600.0
+    results = await asyncio.gather(
+        _nws_metar_obs(client, station, start_utc, end_utc),
+        _iem_metar_obs(client, station, target_date),
+        _awc_metar_obs(client, station, lookback_h),
+        return_exceptions=True,
+    )
+    merged: Dict[datetime, float] = {}
+    failed = []
+    # AWC first, NWS last: on a shared timestamp the validated NWS decode wins.
+    for name, obs in (("awc", results[2]), ("iem", results[1]), ("nws", results[0])):
+        if isinstance(obs, BaseException):
+            failed.append(f"{name}: {obs}")
+            continue
+        for dt, temp_f in obs.items():
+            if dt.astimezone(tz).date() == target_date:  # UTC window over-fetches; local day only
+                merged[dt] = temp_f
+    if failed:
+        logger.warning(f"Observed-extreme feed(s) down for {station} ({len(failed)}/3): "
+                       + "; ".join(failed))
+    if not merged:
+        return None, None
+    temps_f = [_wu_round_from_f(v) for v in merged.values()]
+    value = max(temps_f) if metric == "high" else min(temps_f)
+    return value, max(merged.keys())
 
 # Only TRUST the observed-so-far bound once the relevant extreme has typically
 # occurred in the station's local day: the daily HIGH is reached mid-afternoon,
@@ -945,10 +1034,12 @@ async def fetch_observed_extreme(
     fetch failure) so callers fall back to the uncensored forecast.
 
     Source priority:
-      1. NWS station feed (US cities with ``nws_station``) — settlement-grade: the
-         same METAR/ASOS obs Wunderground resolves on, per-ob rounded to integer °F
-         exactly like the resolution source, ~5-20 min behind real time. Works for
-         both the in-progress day and finished days back ~1 week.
+      1. 3-feed METAR union (US cities with ``nws_station``): NWS API + IEM + AWC,
+         all carrying the same settlement-grade METARs Wunderground resolves on,
+         per-ob rounded to integer °F exactly like the resolution source. Union
+         because each single feed drops obs and lags (see _merged_observed_extreme);
+         merged freshness is the best of the three (~2-8 min). Works for both the
+         in-progress day and finished days (IEM archive is unbounded).
       2. Meteostat fallback (°C cities / NWS outage): hourly running-extreme on the
          in-progress day, daily aggregate on finished days.
 
@@ -994,19 +1085,20 @@ async def fetch_observed_extreme(
     unit = CITY_CONFIG[city_key].get("unit", "F")
     value: Optional[float] = None
 
-    # Settlement-grade source first (US cities): the NWS station feed.
+    # Settlement-grade source first (US cities): the 3-feed METAR union.
     icao = CITY_CONFIG[city_key].get("nws_station")
     if icao and unit == "F":
+        latest_ob = None
         try:
             async with httpx.AsyncClient(timeout=15.0) as client:
-                value = await _nws_observed_extreme(
+                value, latest_ob = await _merged_observed_extreme(
                     client, icao, CITY_CONFIG[city_key].get("tz") or "UTC", target_date, metric
                 )
         except Exception as e:
-            logger.warning(f"NWS observed-extreme fetch failed for {city_key}/{metric}, "
+            logger.warning(f"METAR observed-extreme fetch failed for {city_key}/{metric}, "
                            f"falling back to Meteostat: {e}")
         if value is not None:
-            _observed_cache[key] = (now, value)
+            _observed_cache[key] = (now, value, latest_ob)
             return value
 
     try:
@@ -1056,5 +1148,33 @@ async def fetch_observed_extreme(
         logger.debug(f"Observed-extreme fetch failed for {city_key}/{metric}: {e}")
         return None  # don't cache transient failures
 
-    _observed_cache[key] = (now, value)
+    # Meteostat has no per-ob timestamps -> latest-ob None; the staleness gate then
+    # treats the anchor as unverifiable and keeps the post-extreme regime CLOSED
+    # (the bound still censors — a lagged bound is safe as a bound, per 2026-07-01).
+    _observed_cache[key] = (now, value, None)
     return value
+
+
+def observed_anchor_age_minutes(
+    city_key: str, metric: str, target_date: Optional[date] = None
+) -> Optional[float]:
+    """Minutes since the NEWEST settlement-grade ob backing the observed floor/
+    ceiling last returned by fetch_observed_extreme — i.e. how long we have been
+    blind at the station. None when unknown (no fetch yet, Meteostat fallback).
+
+    Why it matters (2026-07-02 autopsy): the observed-anchored nowcast prices with
+    σ 0.5-0.7°F on the premise that the anchor IS the current thermometer. Both
+    losing cities that day had a feed gap right across peak heating — Denver's
+    anchor was 2.5h old while a fresher ob (89.6→90) already contradicted the bet.
+    A stale anchor must therefore fail the post-extreme gate, not price with
+    post-extreme confidence."""
+    station = METEOSTAT_STATION.get(city_key)
+    if not station:
+        return None
+    if target_date is None:
+        target_date = date.today()
+    field = "tmax" if metric == "high" else "tmin"
+    cached = _observed_cache.get(f"{station}_{target_date.isoformat()}_{field}")
+    if not cached or len(cached) < 3 or cached[2] is None:
+        return None
+    return max(0.0, (datetime.now(timezone.utc) - cached[2]).total_seconds() / 60.0)

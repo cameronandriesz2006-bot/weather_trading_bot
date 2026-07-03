@@ -11,7 +11,8 @@ from backend.config import settings
 from backend.core.sizing import calculate_edge, calculate_kelly_size
 from backend.data.weather import (
     fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias,
-    fetch_observed_extreme, station_local_hour, intraday_sigma,
+    fetch_observed_extreme, observed_anchor_age_minutes, station_local_hour,
+    intraday_sigma,
 )
 from backend.data.weather_markets import WeatherMarket, fetch_polymarket_weather_markets
 from backend.data.orderbook import (
@@ -222,6 +223,9 @@ async def generate_weather_signal(
     # impossible (the "1 hour to close, high already locked in" case). None when
     # unavailable (future date / no obs station) -> uncensored fallback.
     observed_bound = await fetch_observed_extreme(market.city_key, market.metric, market.target_date)
+    # Age of the newest ob behind that bound (None = unknown/Meteostat). Feeds the
+    # post-extreme freshness gate below and the reasoning string.
+    anchor_age_min = observed_anchor_age_minutes(market.city_key, market.metric, market.target_date)
 
     # Intraday σ schedule: on the in-progress local day, narrow (or widen) the forecast
     # to the empirical residual uncertainty at the current station-local hour instead of
@@ -371,7 +375,8 @@ async def generate_weather_signal(
         ensemble_str = f"{mean_val:.1f}{u} (bias {bias:+.1f} -> {mean_val - bias:.1f}{u})"
     if observed_bound is not None:
         kind = "floor" if market.metric == "high" else "ceil"
-        ensemble_str += f" [obs {kind} {observed_bound:.1f}{u}]"
+        age_str = f" @{anchor_age_min:.0f}m" if anchor_age_min is not None else " @?m"
+        ensemble_str += f" [obs {kind} {observed_bound:.1f}{u}{age_str}]"
     if abs(center_val - (mean_val - bias)) > 1e-6:
         ensemble_str += f" [nowcast {center_val:.1f}{u}]"
     # Show the intraday sigma when the schedule is engaged (in-progress local day,
@@ -403,10 +408,16 @@ async def generate_weather_signal(
     market_gap_ok = market_gap is None or market_gap <= gap_threshold
 
     # Post-extreme gate: the observed extreme is in iff we got a non-None observed_bound
-    # (false for any future/day-ahead date and for same-day before the set-hour). This is
-    # the only OOS-robust regime and, with the maker leg off, the guard that keeps day-ahead
+    # (false for any future/day-ahead date and for same-day before the set-hour) AND the
+    # newest ob behind it is fresh. Freshness is load-bearing (2026-07-02: all three losses
+    # priced tight post-extreme σ off a 1-2.5h-stale anchor during a feed gap — the market,
+    # watching the live thermometer, was right). Stale/unverifiable anchor => not in the
+    # post-extreme regime at all: strict liquidity gates AND no taker entry. This is the
+    # only OOS-robust regime and, with the maker leg off, the guard that keeps day-ahead
     # buckets from being taken.
-    extreme_in = observed_bound is not None
+    anchor_fresh = (anchor_age_min is not None
+                    and anchor_age_min <= settings.WEATHER_OBS_MAX_STALENESS_MINUTES)
+    extreme_in = observed_bound is not None and anchor_fresh
     post_extreme_ok = (not settings.WEATHER_REQUIRE_EXTREME_IN) or extreme_in
 
     # Build reasoning — mirror passes_threshold exactly so the recorded note
@@ -424,8 +435,14 @@ async def generate_weather_signal(
                   and post_extreme_ok)
     filter_notes = []
     if not post_extreme_ok:
-        filter_notes.append("extreme not in yet (day-ahead/pre-high)" if local_hour is None
-                            else f"extreme not in yet @{local_hour}h local")
+        if observed_bound is not None and not anchor_fresh:
+            filter_notes.append(
+                f"anchor ob stale ({anchor_age_min:.0f}m > "
+                f"{settings.WEATHER_OBS_MAX_STALENESS_MINUTES}m)" if anchor_age_min is not None
+                else "anchor ob age unknown (non-METAR source)")
+        else:
+            filter_notes.append("extreme not in yet (day-ahead/pre-high)" if local_hour is None
+                                else f"extreme not in yet @{local_hour}h local")
     if entry_price > settings.WEATHER_MAX_ENTRY_PRICE:
         filter_notes.append(f"entry {entry_price:.0%} > {settings.WEATHER_MAX_ENTRY_PRICE:.0%}")
     if net_edge < settings.WEATHER_MIN_EDGE_THRESHOLD:
