@@ -1,6 +1,8 @@
 """Signal generator for weather temperature markets using ensemble forecasts."""
 import asyncio
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Dict, List, Optional
@@ -664,6 +666,10 @@ async def scan_for_weather_signals() -> List[WeatherTradingSignal]:
     # Persist signals to DB
     _persist_weather_signals(signals)
 
+    # Diagnostic: log real-book fillability on contested same-day buckets (never
+    # touches the trading decision — see _log_fillability_probe).
+    _log_fillability_probe(signals)
+
     # Cache the latest scan so read-only callers (the dashboard / API) can serve it
     # INSTANTLY instead of re-running a full scan per request (forecasts + order
     # books = tens of seconds, which was hanging the dashboard's loading screen).
@@ -683,6 +689,78 @@ _last_scan_at: Optional[datetime] = None
 def get_cached_signals() -> List["WeatherTradingSignal"]:
     """The most recent scan's signals (may be empty before the first scan)."""
     return _last_scan_signals
+
+
+# Real-book fillability probe — a diagnostic JSONL sink (never read by the trading
+# path). One line per contested same-day bucket per scan, so we can measure how OFTEN
+# a real book is inside our gates — the "fill realism" half the backtests never modeled.
+FILLABILITY_LOG = os.path.join(
+    os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
+    "logs", "fillability_probe.jsonl",
+)
+
+
+def _log_fillability_probe(signals: list) -> None:
+    """Append one JSON line per CONTESTED same-day bucket per scan.
+
+    The Edge-2 backtest placed 206 trades at a *flat 2c spread* — it never modeled the
+    real book. The edge only lives in the un-railed residue of same-day post-high
+    buckets (most buckets have railed to 0/1 by Ha=16). This records, at every scan,
+    the real-CLOB spread + Gamma liquidity + each regime-scoped gate's outcome on
+    exactly those residual buckets — written whether or not we traded — so we can build
+    a distribution of how often a contested book is actually fillable, instead of
+    reasoning from anecdotes. Purely a diagnostic sink: the trading path never reads it,
+    and the whole thing is wrapped so it can never break a scan.
+    """
+    try:
+        rows = []
+        for s in signals:
+            m = s.market
+            ha = station_local_hour(m.city_key, m.target_date)
+            if ha is None:
+                continue  # not the in-progress local day => not a same-day bucket
+            mid = s.market_probability
+            if not (0.02 < mid < 0.98):
+                continue  # railed to 0/1 — no contest, not the tradeable residue
+            min_liq = (settings.WEATHER_EXTREME_MIN_LIQUIDITY if s.extreme_in
+                       else settings.WEATHER_MIN_LIQUIDITY)
+            max_rel = (settings.WEATHER_EXTREME_MAX_REL_SPREAD if s.extreme_in
+                       else settings.WEATHER_MAX_REL_SPREAD)
+            try:
+                anchor_age = observed_anchor_age_minutes(m.city_key, m.metric, m.target_date)
+            except Exception:
+                anchor_age = None
+            rows.append({
+                "t": s.timestamp.isoformat(timespec="seconds"),
+                "city": m.city_key, "metric": m.metric, "bucket": m.bucket_label,
+                "date": m.target_date.isoformat(), "ha": ha,
+                "extreme_in": bool(s.extreme_in),
+                "anchor_age_min": (round(anchor_age, 1) if anchor_age is not None else None),
+                "dir": s.direction,
+                "model_p": round(s.model_probability, 4), "mid": round(mid, 4),
+                "edge": round(s.edge, 4), "net_edge": round(s.net_edge, 4),
+                "entry_price": round(s.entry_price, 4),
+                "rel_spread": round(s.rel_spread, 4),
+                "liquidity": round(m.liquidity, 1), "volume": round(m.volume, 1),
+                "min_liq": min_liq, "max_rel": max_rel,
+                # per-gate outcomes (regime-scoped) so the *binding constraint* is queryable
+                "edge_ok": bool(s.net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD),
+                "entry_ok": bool(0 < s.entry_price <= settings.WEATHER_MAX_ENTRY_PRICE),
+                "spread_ok": bool(s.rel_spread <= max_rel),
+                "liq_ok": bool(m.liquidity >= min_liq),
+                "vol_ok": bool(m.volume >= settings.WEATHER_MIN_VOLUME),
+                "gap_ok": bool(s.market_gap_ok),
+                "extreme_ok": bool(s.post_extreme_ok),
+                "passes": bool(s.passes_threshold),
+            })
+        if not rows:
+            return
+        os.makedirs(os.path.dirname(FILLABILITY_LOG), exist_ok=True)
+        with open(FILLABILITY_LOG, "a") as f:
+            for r in rows:
+                f.write(json.dumps(r) + "\n")
+    except Exception as e:  # a diagnostic must never take the scan down
+        logger.debug(f"fillability probe skipped: {e}")
 
 
 def _persist_weather_signals(signals: list):
