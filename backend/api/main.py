@@ -334,9 +334,15 @@ async def get_stats(db: Session = Depends(get_db)):
     # the headline P&L / win-rate count only trades entered at/after the epoch, so the whole
     # dashboard reads as one clean post-reset record. Pre-epoch trades stay in the DB.
     epoch = _scoreboard_epoch()
-    settled = [t for t in db.query(Trade).filter(Trade.settled == True).all()
-               if _is_active_weather(t.event_slug)
-               and (epoch is None or (t.timestamp is not None and t.timestamp >= epoch))]
+    def _in_scope(t) -> bool:
+        return (_is_active_weather(t.event_slug)
+                and (epoch is None or (t.timestamp is not None and t.timestamp >= epoch)))
+
+    all_scope = [t for t in db.query(Trade).all() if _in_scope(t)]
+    settled = [t for t in all_scope if t.settled]
+    # Headline "total trades" counts only current-version (post-epoch, active-city) trades so the
+    # header can't read "75 total / 4 settled"; the lifetime odometer stays on state.total_trades.
+    placed_trades = len(all_scope)
     settled_trades = len(settled)
     winning_trades = sum(1 for t in settled if t.result == "win")
     win_rate = (winning_trades / settled_trades) if settled_trades else 0
@@ -350,7 +356,7 @@ async def get_stats(db: Session = Depends(get_db)):
 
     return BotStats(
         bankroll=round(display_bankroll, 2),
-        total_trades=state.total_trades,
+        total_trades=placed_trades,
         winning_trades=winning_trades,
         win_rate=win_rate,
         total_pnl=round(active_pnl, 2),
@@ -372,6 +378,11 @@ async def get_trades(
     query = db.query(Trade)
     if status:
         query = query.filter(Trade.result == status)
+    # Honor the scoreboard epoch: after a soft reset the trade log shows only trades
+    # placed by the current program version (pre-epoch rows stay in the DB).
+    epoch = _scoreboard_epoch()
+    if epoch is not None:
+        query = query.filter(Trade.timestamp >= epoch)
     trades = query.order_by(Trade.timestamp.desc()).limit(limit).all()
 
     return [_trade_to_response(t) for t in trades]
@@ -379,7 +390,11 @@ async def get_trades(
 
 @app.get("/api/equity-curve")
 async def get_equity_curve(db: Session = Depends(get_db)):
-    trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+    epoch = _scoreboard_epoch()
+    q = db.query(Trade).filter(Trade.settled == True)
+    if epoch is not None:
+        q = q.filter(Trade.timestamp >= epoch)
+    trades = q.order_by(Trade.timestamp).all()
 
     curve = []
     cumulative_pnl = 0
@@ -1051,8 +1066,13 @@ async def get_dashboard(db: Session = Depends(get_db)):
     stats = await get_stats(db)
 
     # Recent trades — ACTIVE cities only (parked cities stay in the DB but are hidden here);
-    # with mark-to-market prices for open positions.
-    trades_all = db.query(Trade).order_by(Trade.timestamp.desc()).limit(200).all()
+    # with mark-to-market prices for open positions. Also gated by the scoreboard epoch so the
+    # log shows only trades placed by the current program version (pre-epoch rows stay in the DB).
+    epoch = _scoreboard_epoch()
+    trades_q = db.query(Trade)
+    if epoch is not None:
+        trades_q = trades_q.filter(Trade.timestamp >= epoch)
+    trades_all = trades_q.order_by(Trade.timestamp.desc()).limit(200).all()
     trades = [t for t in trades_all if _is_active_weather(t.event_slug)][:50]
     side_prices = await _current_side_prices(trades)
     recent_trades = [_trade_to_response(t, current_price=side_prices.get(t.id)) for t in trades]
@@ -1074,8 +1094,11 @@ async def get_dashboard(db: Session = Depends(get_db)):
         if len(working_orders) >= 40:
             break
 
-    # Equity curve
-    equity_trades = db.query(Trade).filter(Trade.settled == True).order_by(Trade.timestamp).all()
+    # Equity curve (post-epoch only, matching the trade log + headline stats)
+    equity_q = db.query(Trade).filter(Trade.settled == True)
+    if epoch is not None:
+        equity_q = equity_q.filter(Trade.timestamp >= epoch)
+    equity_trades = equity_q.order_by(Trade.timestamp).all()
     equity_curve = []
     cumulative_pnl = 0
     for trade in equity_trades:
