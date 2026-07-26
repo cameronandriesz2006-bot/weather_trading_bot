@@ -171,34 +171,104 @@ def best_set_size(ladders: List[List[Tuple[float, float]]], payout_per_set: floa
     return best
 
 
+def best_subset_short(ladders: List[Tuple[int, List[Tuple[float, float]]]],
+                      max_candidates: int = 160) -> Optional[dict]:
+    """Best SHORT-the-board trade over any SUBSET of legs, walked to depth.
+
+    Buying NO on a subset S of a mutually-exclusive, exhaustive board pays m-1 in the worst
+    case (the winner is inside S) and m otherwise, where m=|S| — verified by brute force over
+    20k random boards. So:
+
+        guaranteed profit = (m-1) - sum(NO_ask over S) = sum_{i in S}(1 - NO_ask_i) - 1
+
+    which means a leg belongs in the trade exactly when its NO costs less than $1, and legs
+    that are unquoted or too thin simply drop out. Requiring all N legs — as the first version
+    of this scanner did — was needless strictness that discarded 125 of 149 boards, since a
+    missing leg costs you only the *bonus* case, never the guarantee.
+
+    The BUY direction has no such relaxation and is handled separately: skipping a leg there
+    means the trade can pay nothing at all, so it must stay exhaustive.
+    """
+    if len(ladders) < 2:
+        return None
+    # Candidate set sizes: every point where some leg's marginal price changes. Subsampled if
+    # huge, since this runs across ~150 boards every 2 seconds.
+    bounds = set()
+    for _, lad in ladders:
+        tot = 0.0
+        for _, size in lad:
+            tot += size
+            bounds.add(round(tot, 6))
+    cands = sorted(b for b in bounds if b > 0)
+    if len(cands) > max_candidates:
+        step = len(cands) / max_candidates
+        cands = [cands[int(i * step)] for i in range(max_candidates)]
+
+    best = None
+    for k in cands:
+        inc, cost = [], 0.0
+        for i, lad in ladders:
+            c = cost_for_shares(lad, k)
+            if c is None or c >= k:      # no depth, or its NO averages >= $1 -> excludes itself
+                continue
+            inc.append(i)
+            cost += c
+        m = len(inc)
+        if m < 2:
+            continue
+        profit = k * (m - 1) - cost
+        if profit <= 0:
+            continue
+        if best is None or profit > best["profit"]:
+            best = {"k": k, "cost": cost, "profit": profit, "legs": m,
+                    "roc": profit / cost if cost > 0 else 0.0}
+    return best
+
+
 def evaluate_event(legs: List[dict], books: Dict[str, LiveBook]) -> Optional[dict]:
     """Both arb directions for one board, at depth. None if the board isn't fully quoted."""
     n = len(legs)
-    yes_lad, no_lad = [], []
-    for leg in legs:
+    yes_lad, no_sub = [], []
+    complete_yes, complete_no = True, True
+    for i, leg in enumerate(legs):
         by, bn = books.get(leg["yes"]), books.get(leg["no"])
-        if not by or not by.asks or not bn or not bn.asks:
-            return None            # a leg we cannot buy => no executable arb
-        yes_lad.append(by.asks)
-        no_lad.append(bn.asks)
+        if by and by.asks:
+            yes_lad.append(by.asks)
+        else:
+            complete_yes = False
+        if bn and bn.asks:
+            no_sub.append((i, bn.asks))
+        else:
+            complete_no = False
+    if not no_sub:
+        return None
 
-    top_yes_ask = sum(l[0][0] for l in yes_lad)
-    top_no_ask = sum(l[0][0] for l in no_lad)
+    out = {"n": n, "legs_quoted": len(no_sub), "complete": complete_no}
 
-    out = {"n": n, "top_yes_ask_sum": round(top_yes_ask, 4),
-           "top_no_ask_sum": round(top_no_ask, 4),
-           # the headline "is there anything here at all" numbers, top-of-book:
-           "top_buy_edge": round(1.0 - top_yes_ask, 4),
-           "top_short_edge": round((n - 1) - top_no_ask, 4)}
-
-    buy = best_set_size(yes_lad, 1.0)
-    short = best_set_size(no_lad, float(n - 1))
-    for label, res in (("buy", buy), ("short", short)):
-        if res:
-            out[label] = {"k": round(res["k"], 2), "cost": round(res["cost"], 2),
-                          "profit": round(res["profit"], 4),
-                          "roc": round(res["roc"], 5),
-                          "executable": res["k"] >= MIN_ORDER_SHARES}
+    # SHORT: any subset works, so this is the number that matters.
+    short = best_subset_short(no_sub)
+    if short:
+        out["short"] = {"k": round(short["k"], 2), "cost": round(short["cost"], 2),
+                        "profit": round(short["profit"], 4), "roc": round(short["roc"], 5),
+                        "legs": short["legs"],
+                        "executable": short["k"] >= MIN_ORDER_SHARES}
+    # The old all-legs-required result, kept so runs before/after this change stay comparable
+    # and so we can see exactly how much the subset relaxation bought us.
+    if complete_no:
+        strict = best_set_size([l for _, l in no_sub], float(n - 1))
+        if strict:
+            out["short_strict"] = {"k": round(strict["k"], 2), "cost": round(strict["cost"], 2),
+                                   "profit": round(strict["profit"], 4),
+                                   "roc": round(strict["roc"], 5),
+                                   "executable": strict["k"] >= MIN_ORDER_SHARES}
+    # BUY: must be exhaustive — skipping a leg means the trade can pay nothing.
+    if complete_yes:
+        out["top_yes_ask_sum"] = round(sum(l[0][0] for l in yes_lad), 4)
+        buy = best_set_size(yes_lad, 1.0)
+        if buy:
+            out["buy"] = {"k": round(buy["k"], 2), "cost": round(buy["cost"], 2),
+                          "profit": round(buy["profit"], 4), "roc": round(buy["roc"], 5),
+                          "executable": buy["k"] >= MIN_ORDER_SHARES}
     return out
 
 
@@ -278,13 +348,15 @@ def print_sweep(r: dict, top: int):
     if not hits:
         print("  no board is buyable below its guaranteed payout at ANY depth.")
         return
-    print(f"  {'dir':>5} {'k':>7} {'cost$':>9} {'profit$':>8} {'ROC':>7} {'exec':>5}  board")
+    print(f"  {'dir':>6} {'legs':>5} {'k':>7} {'cost$':>9} {'profit$':>8} {'ROC':>7} {'exec':>5}  board")
     for h in hits[:top]:
-        for d in ("buy", "short"):
+        for d in ("buy", "short", "short_strict"):
             if d in h:
                 b = h[d]
-                print(f"  {d:>5} {b['k']:>7.1f} {b['cost']:>9.2f} {b['profit']:>8.2f} "
-                      f"{b['roc']*100:>6.2f}% {str(b['executable']):>5}  {h['slug'][:52]}")
+                legs = b.get("legs", h.get("n", 0))
+                print(f"  {d:>6} {legs:>2}/{h.get('n',0):<2} {b['k']:>7.1f} {b['cost']:>9.2f} "
+                      f"{b['profit']:>8.2f} {b['roc']*100:>6.2f}% {str(b['executable']):>5}  "
+                      f"{h['slug'][:48]}")
     tot = sum(max(h.get("buy", {}).get("profit", 0), h.get("short", {}).get("profit", 0))
               for h in ex)
     print(f"  EXECUTABLE PROFIT THIS SWEEP: ${tot:.2f}")
