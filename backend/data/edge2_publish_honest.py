@@ -40,7 +40,7 @@ from backend.config import settings
 from backend.data.weather import CITY_CONFIG, get_station_bias
 from backend.data.calibration_backfill import extract_event, fetch_blend_means, brier
 from backend.data.calibration_intraday import model_prob_at_hour, _fetch_day_history, _price_at
-from backend.core.sizing import calculate_edge
+from backend.core.sizing import calculate_edge, taker_fee_per_share
 from backend.data.edge2_backtest import bucket_center, _c_scale
 from backend.data.edge2_oos_backtest import fetch_both_ends, _bootstrap_ci, HDR
 from backend.data.edge2_execution_honest import RAIL_LO, RAIL_HI, _kelly_pnl
@@ -204,7 +204,7 @@ async def main():
                 if side_mid <= 0:
                     continue
                 entry = min(0.999, side_mid + settings.WEATHER_DEFAULT_SPREAD / 2.0)
-                net_edge = edge - (settings.WEATHER_DEFAULT_SPREAD / 2.0 + settings.WEATHER_FEE_RATE)
+                net_edge = edge - (settings.WEATHER_DEFAULT_SPREAD / 2.0 + taker_fee_per_share(entry))
                 rel_spread = settings.WEATHER_DEFAULT_SPREAD / side_mid
                 railed = not (RAIL_LO < price < RAIL_HI)
                 passes = (not railed

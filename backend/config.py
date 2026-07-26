@@ -111,8 +111,20 @@ class Settings(BaseSettings):
     # spread is used when available; this is the fallback). We enter at the ask
     # (mid + spread/2) and require the model edge to clear costs before trading.
     WEATHER_DEFAULT_SPREAD: float = 0.02      # fallback spread (price units) if market lacks one
-    WEATHER_FEE_RATE: float = 0.0             # platform trading fee as a fraction of notional
-                                              # (Polymarket ~0; set for Kalshi when enabled)
+
+    # Polymarket DOES charge a taker fee on weather markets. Verified live 2026-07-26 on all
+    # 1,639 daily-temperature markets: feesEnabled=true, feeType="weather_fees",
+    # feeSchedule={"exponent":1,"rate":0.05,"rebateRate":0.25,"takerOnly":true}. Documented
+    # formula: fee = shares * rate * p * (1-p), charged to the TAKER only — makers pay nothing
+    # and collect a 25% rebate.
+    #
+    # This replaces WEATHER_FEE_RATE, which was 0.0 and therefore wrong. Two bugs in one: the
+    # rate was zero, AND a flat fraction-of-notional cannot express this shape — the real cost
+    # is ~0.5% of notional at p=0.90 but ~2.5% at p=0.50, i.e. worst exactly where books are
+    # loose. Every Edge-2 backtest and the 49-trade live test netted edge against zero fees.
+    # Use the helpers in core/sizing.py (taker_fee_per_share / taker_fee_on_cash), never the
+    # raw rate, so the p*(1-p) shape is applied consistently.
+    WEATHER_TAKER_FEE_RATE: float = 0.05      # 0 disables (maker-only fills, or Kalshi)
 
     # Liquidity / slippage guard (Layer 1 + size cap). Thin, wide-spread weather
     # buckets produce mirage edges (a 30% "edge" on a 4c market whose spread is 2c

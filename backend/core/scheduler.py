@@ -8,6 +8,7 @@ from sqlalchemy import func
 import logging
 
 from backend.config import settings
+from backend.core.sizing import taker_fee_on_cash
 from backend.models.database import SessionLocal, Trade, BotState, Signal
 
 logging.basicConfig(level=logging.INFO)
@@ -247,7 +248,7 @@ async def weather_scan_and_trade_job():
 
                 # Enter at the effective (cost-adjusted) ask, and book the fee.
                 entry_price = signal.entry_price
-                fee = settings.WEATHER_FEE_RATE * trade_size
+                fee = taker_fee_on_cash(trade_size, entry_price)
 
                 # Tag the scoreboard cohort: did this city+metric get a per-station
                 # bias correction? (False for the uncorrected coastal cities.)

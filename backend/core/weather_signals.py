@@ -10,7 +10,7 @@ from typing import Dict, List, Optional
 import httpx
 
 from backend.config import settings
-from backend.core.sizing import calculate_edge, calculate_kelly_size
+from backend.core.sizing import calculate_edge, calculate_kelly_size, taker_fee_per_share
 from backend.data.weather import (
     fetch_ensemble_forecast, EnsembleForecast, CITY_CONFIG, get_station_bias,
     fetch_observed_extreme, observed_anchor_age_minutes, station_local_hour,
@@ -280,7 +280,7 @@ async def generate_weather_signal(
         entry_price = min(0.999, side_mid + spread_used / 2.0)
 
     half_spread = spread_used / 2.0
-    cost = half_spread + settings.WEATHER_FEE_RATE
+    cost = half_spread + taker_fee_per_share(entry_price)
 
     # Spread as a fraction of the side's price: a 2c spread on a 4c contract is a
     # 50% mirage even though 2c "looks" tiny. Gated in passes_threshold.
@@ -358,7 +358,7 @@ async def generate_weather_signal(
                 entry_price = min(0.999, fill.vwap)            # exact avg price paid
                 # Cost is now the realized slippage over the side mid, plus fee;
                 # net edge = our probability for the side minus what we really pay.
-                cost = (entry_price - side_mid) + settings.WEATHER_FEE_RATE
+                cost = (entry_price - side_mid) + taker_fee_per_share(entry_price)
                 net_edge = edge - cost
                 fill_levels = fill.levels
                 fill_best_ask = fill.best_ask

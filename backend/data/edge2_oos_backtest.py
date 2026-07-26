@@ -39,7 +39,7 @@ from backend.data.calibration_backfill import (fetch_resolved_events, extract_ev
                                                fetch_blend_means, brier, GAMMA)
 from backend.data.calibration_intraday import (fetch_hourly_obs, model_prob_at_hour,
                                                _fetch_day_history, _price_at)
-from backend.core.sizing import calculate_edge, calculate_kelly_size
+from backend.core.sizing import calculate_edge, calculate_kelly_size, taker_fee_per_share
 from backend.data.edge2_backtest import bucket_center, _c_scale
 
 HDR = {"User-Agent": "Mozilla/5.0"}
@@ -219,7 +219,7 @@ async def main():
                 if side_mid <= 0:
                     continue
                 entry = min(0.999, side_mid + settings.WEATHER_DEFAULT_SPREAD / 2.0)
-                net_edge = edge - (settings.WEATHER_DEFAULT_SPREAD / 2.0 + settings.WEATHER_FEE_RATE)
+                net_edge = edge - (settings.WEATHER_DEFAULT_SPREAD / 2.0 + taker_fee_per_share(entry))
                 rel_spread = settings.WEATHER_DEFAULT_SPREAD / side_mid
                 if net_edge < settings.WEATHER_MIN_EDGE_THRESHOLD: continue
                 if rel_spread > settings.WEATHER_MAX_REL_SPREAD: continue

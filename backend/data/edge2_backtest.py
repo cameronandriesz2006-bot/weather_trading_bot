@@ -36,7 +36,7 @@ from backend.data.weather import (CITY_CONFIG, METEOSTAT_STATION, get_station_bi
 from backend.data.calibration_backfill import fetch_resolved_events, extract_event, fetch_blend_means
 from backend.data.calibration_intraday import (fetch_hourly_obs, model_prob_at_hour,
                                                _fetch_day_history, _price_at)
-from backend.core.sizing import calculate_edge, calculate_kelly_size
+from backend.core.sizing import calculate_edge, calculate_kelly_size, taker_fee_per_share
 
 HDR = {"User-Agent": "Mozilla/5.0"}
 random.seed(20260630)
@@ -75,7 +75,7 @@ async def main():
     hours = [int(h) for h in args.hours.split(",")]
     months = set(int(m) for m in args.months.split(","))
     print(f"cities={cities}  hours={hours}  months={sorted(months)}  spread={args.spread}  "
-          f"edge_gate={args.edge}  fee={settings.WEATHER_FEE_RATE}  kelly={settings.KELLY_FRACTION}/"
+          f"edge_gate={args.edge}  fee=taker{settings.WEATHER_TAKER_FEE_RATE}*p(1-p)  kelly={settings.KELLY_FRACTION}/"
           f"{settings.KELLY_MAX_TRADE_FRACTION}  gap_tol={settings.WEATHER_MAX_MARKET_GAP_F}F")
 
     # ---- data build (reuse the calibration_intraday reconstruction) ----
@@ -165,7 +165,7 @@ async def main():
                 if side_mid <= 0:
                     continue
                 entry = min(0.999, side_mid + args.spread / 2.0)
-                cost = args.spread / 2.0 + settings.WEATHER_FEE_RATE
+                cost = args.spread / 2.0 + taker_fee_per_share(entry)
                 rel_spread = args.spread / side_mid
                 net_edge = edge - cost
                 # gates (faithful to passes_threshold)

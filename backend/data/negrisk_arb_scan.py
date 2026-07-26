@@ -7,10 +7,16 @@ two open tails plus nine 2°F bands). Exactly one settles YES. That gives two pu
 need **no weather knowledge at all** — they are order-book identities, not forecasts:
 
   SHORT-THE-BOARD  buy 1 NO on every bucket. Exactly N-1 of them pay $1.
-                   profit/set = (N-1) - sum(NO_ask)      [equivalently: sum(YES_bid) - 1]
+                   gross/set = (N-1) - sum(NO_ask)       [equivalently: sum(YES_bid) - 1]
 
   BUY-THE-BOARD    buy 1 YES on every bucket. Exactly 1 pays $1.
-                   profit/set = 1 - sum(YES_ask)
+                   gross/set = 1 - sum(YES_ask)
+
+Both identities are correct and both were, in the first version of this scanner, MEASURED WRONG:
+it charged no fee, and Polymarket charges a taker fee on exactly these markets (see
+TAKER_FEE_RATE below). The gross number is a mirage roughly 5x the size of the real edge, so this
+module now optimises and reports NET throughout. `short_gross_illusion` records what the old
+scorer would have claimed, so the log keeps showing the size of the mistake instead of hiding it.
 
 The platform-wide scan (``arb_scan.py``) already checks both, but ONLY at top-of-book, which
 is precisely the mirage this module exists to kill: a board quoting 1.03 with $8 of depth
@@ -36,6 +42,7 @@ import asyncio
 import json
 import os
 import time
+from bisect import bisect_left
 from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Dict, List, Optional, Tuple
@@ -43,14 +50,28 @@ from typing import Dict, List, Optional, Tuple
 import httpx
 
 from backend.data.orderbook import fetch_books, LiveBook
+from backend.data.weather_markets import parse_bucket_label
 
 HDR = {"User-Agent": "Mozilla/5.0"}
 GAMMA_EVENTS = "https://gamma-api.polymarket.com/events"
 LOG_PATH = "logs/negrisk_arb.jsonl"
-TOKEN_CACHE = "logs/negrisk_tokens.json"
+TOKEN_CACHE = "logs/negrisk_tokens_v2.json"   # v2: carries groupItemTitle for the partition check
 
-MIN_ORDER_SHARES = 5.0      # Polymarket orderMinSize on these markets
-TICK = 0.01
+MIN_ORDER_SHARES = 5.0      # Polymarket orderMinSize on these markets (verified: 5 SHARES, per leg)
+
+# Polymarket charges a TAKER fee on these markets and the first version of this scanner charged
+# NOTHING — which is why it reported an edge that does not exist. Verified live on all 1,639
+# markets in the universe: feeType "weather_fees", feeSchedule
+# {"exponent":1,"rate":0.05,"rebateRate":0.25,"takerOnly":true}; fee = shares * rate * p * (1-p).
+#
+# This fee is fatal to the naive version of this trade for a structural reason worth stating: it
+# is a PER-LEG tax while the arb edge is not. Per set, fee = rate * (sum(q) - sum(q^2)) where
+# q_i = 1 - NO_ask_i, and since the arb needs sum(q) slightly over 1, fee ~= rate * (1 - sum(q^2)).
+# Shorting 9 legs to collect 0.7c of edge pays nine legs of fee (~3.4c) and loses. A 2-leg crossed
+# pair collecting 10c of edge pays at most 2.5c and wins. So the ONLY fee-viable shape is a small,
+# genuinely crossed subset — the opposite of what maximising GROSS profit selects for. Hence
+# `best_subset_net` optimises NET and lets the leg count fall out of that.
+TAKER_FEE_RATE = 0.05
 
 
 # --------------------------------------------------------------------------- enumeration
@@ -106,7 +127,7 @@ async def fetch_event_tokens(client: httpx.AsyncClient, slug: str) -> Optional[d
         yi = 0
         if isinstance(outcomes, list) and len(outcomes) >= 2:
             yi = 0 if str(outcomes[0]).strip().lower() in ("yes", "y") else 1
-        legs.append({"q": m.get("question", ""),
+        legs.append({"q": m.get("question", ""), "t": m.get("groupItemTitle", ""),
                      "yes": str(toks[yi]), "no": str(toks[1 - yi])})
     if len(legs) < 3:
         return None
@@ -126,6 +147,128 @@ def cost_for_shares(asks: List[Tuple[float, float]], k: float) -> Optional[float
     if need > 1e-9:
         return None
     return cost
+
+
+def _prefix(lad: List[Tuple[float, float]]) -> Tuple[List[float], List[float], List[float]]:
+    """Cumulative (shares, cost) plus the price at each level, for O(log n) depth walks.
+
+    The old code re-walked every ladder from the top for every candidate k, which made the sweep
+    CPU-bound (measured: 1.98s of the 3.14s cycle was Python, not network). Prefix sums turn each
+    cost lookup into a bisect, and the fee-aware optimiser needs strictly more lookups than the
+    gross one did — without this it would push the cycle past 4s.
+    """
+    cs, cc, pr = [], [], []
+    ts = tc = 0.0
+    for price, size in lad:
+        ts += size
+        tc += price * size
+        cs.append(ts)
+        cc.append(tc)
+        pr.append(price)
+    return cs, cc, pr
+
+
+def _cost_at(pfx, k: float) -> Optional[float]:
+    """USDC to buy exactly ``k`` shares, via the prefix arrays. None if depth < k."""
+    cs, cc, pr = pfx
+    if not cs or k > cs[-1] + 1e-9:
+        return None
+    i = bisect_left(cs, k - 1e-9)
+    if i >= len(cs):
+        i = len(cs) - 1
+    prev_s = cs[i - 1] if i else 0.0
+    prev_c = cc[i - 1] if i else 0.0
+    return prev_c + (k - prev_s) * pr[i]
+
+
+def best_subset_net(ladders: List[Tuple[int, List[Tuple[float, float]]]],
+                    rate: float = TAKER_FEE_RATE) -> Optional[dict]:
+    """Best SHORT-the-board trade over any subset of legs, maximising profit NET OF TAKER FEES.
+
+    Net profit for a subset S at k sets is additive across legs exactly as the gross version is:
+
+        net(S, k) = sum_{i in S} (k - cost_i(k) - fee_i(k))  -  k
+
+    so for a fixed k the optimal subset is still "include leg i iff its marginal contribution is
+    positive" — only now the test is ``k - cost_i - fee_i > 0`` rather than ``cost_i < k``. That
+    matters: the old gross test was mathematically unreachable (it required an average NO price
+    >= $1.00, and no such level exists), so it admitted EVERY quoted leg, including 99c legs that
+    contribute 0.1c of edge while consuming 99c of capital and paying fee on all of it. The net
+    test throws those out, which is why it sizes down ~40x and reports far fewer, far smaller,
+    genuinely positive trades.
+
+    Candidates are every cumulative-depth boundary. Unlike the previous version this ALWAYS
+    includes max_k: the old subsampler computed ``cands[int(i*len/160)]``, whose largest index is
+    strictly below len-1, so it silently discarded the deepest candidate on every board with more
+    than 160 boundaries (a constructed case lost $800 of $800.32).
+    """
+    if len(ladders) < 2:
+        return None
+    pfxs = [(i, _prefix(lad)) for i, lad in ladders]
+    bounds = set()
+    for _, (cs, _, _) in pfxs:
+        for c in cs:
+            bounds.add(round(c, 6))
+    cands = sorted(b for b in bounds if b >= MIN_ORDER_SHARES)
+    if not cands:
+        return None
+
+    best = None
+    for k in cands:
+        inc, cost, fee = [], 0.0, 0.0
+        for i, pfx in pfxs:
+            c = _cost_at(pfx, k)
+            if c is None:
+                continue
+            p = c / k
+            f = k * rate * p * (1.0 - p)
+            if k - c - f <= 0:          # this leg costs more than the $1/share it can return
+                continue
+            inc.append(i)
+            cost += c
+            fee += f
+        m = len(inc)
+        if m < 2:
+            continue
+        gross = k * (m - 1) - cost
+        net = gross - fee
+        if net <= 0:
+            continue
+        if best is None or net > best["net"]:
+            best = {"k": k, "cost": cost, "gross": gross, "fee": fee, "net": net,
+                    "legs": m, "roc": net / cost if cost > 0 else 0.0}
+    return best
+
+
+def best_set_size_net(ladders: List[List[Tuple[float, float]]], payout_per_set: float,
+                      rate: float = TAKER_FEE_RATE) -> Optional[dict]:
+    """BUY-the-board (or all-legs short), net of taker fees. Must stay exhaustive — see caller."""
+    if not ladders or any(not l for l in ladders):
+        return None
+    pfxs = [_prefix(l) for l in ladders]
+    max_k = min(cs[-1] for cs, _, _ in pfxs)
+    if max_k < MIN_ORDER_SHARES:
+        return None
+    cands = {round(max_k, 6)}
+    for cs, _, _ in pfxs:
+        for c in cs:
+            if MIN_ORDER_SHARES <= c <= max_k:
+                cands.add(round(c, 6))
+    best = None
+    for k in sorted(cands):
+        costs = [_cost_at(p, k) for p in pfxs]
+        if any(c is None for c in costs):
+            continue
+        cost = sum(costs)
+        fee = sum(k * rate * (c / k) * (1.0 - c / k) for c in costs)
+        gross = k * payout_per_set - cost
+        net = gross - fee
+        if best is None or net > best["net"]:
+            best = {"k": k, "cost": cost, "gross": gross, "fee": fee, "net": net,
+                    "roc": net / cost if cost > 0 else 0.0}
+    if best is None or best["net"] <= 0:
+        return None
+    return best
 
 
 def best_set_size(ladders: List[List[Tuple[float, float]]], payout_per_set: float) -> Optional[dict]:
@@ -225,8 +368,52 @@ def best_subset_short(ladders: List[Tuple[int, List[Tuple[float, float]]]],
     return best
 
 
-def evaluate_event(legs: List[dict], books: Dict[str, LiveBook]) -> Optional[dict]:
-    """Both arb directions for one board, at depth. None if the board isn't fully quoted."""
+def board_sanity(legs: List[dict]) -> dict:
+    """Do this board's buckets actually form a partition? Computed once, at token-load time.
+
+    The two arb directions need DIFFERENT structural properties, and the old code checked
+    neither — it trusted the event-level ``negRisk`` flag and a ``len(legs) >= 3`` guard:
+
+      SHORT a subset needs MUTUAL EXCLUSIVITY only. "At least m-1 of m NOs pay" follows from
+        "at most one leg in S resolves YES". Exhaustiveness is irrelevant; if nothing on the
+        board wins, every NO pays and you do better.
+      BUY needs EXHAUSTIVENESS only. Skip a leg and the winner may be the one you skipped, in
+        which case every YES you bought pays zero and you lose the entire stake.
+
+    Both failures are silent and catastrophic, and both are reachable: boards are created with
+    ``createdAt`` spanning 2-5 seconds, so Gamma can return a partial market list, and the token
+    cache never re-validated what it captured. A 3-leg fragment with a gap at 83-84F would have
+    been reported as a guaranteed $10 on $90 — and lost the $90 whenever the high was 83F.
+    """
+    rngs = []
+    for leg in legs:
+        pb = parse_bucket_label(leg.get("t") or leg.get("q") or "")
+        if pb is None:
+            return {"exclusive": False, "exhaustive": False, "why": "unparseable bucket"}
+        rngs.append(pb)
+    # Sort with open tails at the ends; a partition is then strictly adjacent, lo == prev_hi + 1.
+    lows = [r for r in rngs if r[0] is None]
+    highs = [r for r in rngs if r[1] is None]
+    mid = sorted((r for r in rngs if r[0] is not None and r[1] is not None), key=lambda r: r[0])
+    if len(lows) != 1 or len(highs) != 1:
+        return {"exclusive": False, "exhaustive": False, "why": "tails != 1 each"}
+    for a, b in zip(mid, mid[1:]):
+        if b[0] <= a[1]:
+            return {"exclusive": False, "exhaustive": False, "why": f"overlap {a}/{b}"}
+    exhaustive = True
+    if mid:
+        if lows[0][1] != mid[0][0] - 1 or highs[0][0] != mid[-1][1] + 1:
+            exhaustive = False
+        for a, b in zip(mid, mid[1:]):
+            if b[0] != a[1] + 1:
+                exhaustive = False
+    return {"exclusive": True, "exhaustive": exhaustive,
+            "why": "" if exhaustive else "gap between buckets"}
+
+
+def evaluate_event(legs: List[dict], books: Dict[str, LiveBook],
+                   sanity: Optional[dict] = None) -> Optional[dict]:
+    """Both arb directions for one board, at depth, NET OF TAKER FEES. None if nothing quoted."""
     n = len(legs)
     yes_lad, no_sub = [], []
     complete_yes, complete_no = True, True
@@ -243,32 +430,35 @@ def evaluate_event(legs: List[dict], books: Dict[str, LiveBook]) -> Optional[dic
     if not no_sub:
         return None
 
+    sanity = sanity or {"exclusive": False, "exhaustive": False, "why": "unchecked"}
     out = {"n": n, "legs_quoted": len(no_sub), "complete": complete_no}
 
-    # SHORT: any subset works, so this is the number that matters.
-    short = best_subset_short(no_sub)
-    if short:
-        out["short"] = {"k": round(short["k"], 2), "cost": round(short["cost"], 2),
-                        "profit": round(short["profit"], 4), "roc": round(short["roc"], 5),
-                        "legs": short["legs"],
-                        "executable": short["k"] >= MIN_ORDER_SHARES}
-    # The old all-legs-required result, kept so runs before/after this change stay comparable
-    # and so we can see exactly how much the subset relaxation bought us.
-    if complete_no:
-        strict = best_set_size([l for _, l in no_sub], float(n - 1))
-        if strict:
-            out["short_strict"] = {"k": round(strict["k"], 2), "cost": round(strict["cost"], 2),
-                                   "profit": round(strict["profit"], 4),
-                                   "roc": round(strict["roc"], 5),
-                                   "executable": strict["k"] >= MIN_ORDER_SHARES}
-    # BUY: must be exhaustive — skipping a leg means the trade can pay nothing.
-    if complete_yes:
+    # SHORT any subset — needs mutual exclusivity, which board_sanity proves. Optimised on NET,
+    # so 99c filler legs that only ever added capital and fee now exclude themselves.
+    if sanity["exclusive"]:
+        net = best_subset_net(no_sub)
+        if net:
+            out["short"] = {"k": round(net["k"], 2), "cost": round(net["cost"], 2),
+                            "gross": round(net["gross"], 4), "fee": round(net["fee"], 4),
+                            "profit": round(net["net"], 4), "roc": round(net["roc"], 5),
+                            "legs": net["legs"],
+                            "executable": net["k"] >= MIN_ORDER_SHARES}
+        # The gross-optimal number the old scanner reported, kept ONLY so the log records how
+        # large the fee illusion was on each board. Never trade on it.
+        gross_only = best_subset_short(no_sub)
+        if gross_only:
+            out["short_gross_illusion"] = round(gross_only["profit"], 4)
+    # BUY must be exhaustive — skipping a leg means the trade can pay nothing at all.
+    if complete_yes and sanity["exhaustive"]:
         out["top_yes_ask_sum"] = round(sum(l[0][0] for l in yes_lad), 4)
-        buy = best_set_size(yes_lad, 1.0)
+        buy = best_set_size_net(yes_lad, 1.0)
         if buy:
             out["buy"] = {"k": round(buy["k"], 2), "cost": round(buy["cost"], 2),
-                          "profit": round(buy["profit"], 4), "roc": round(buy["roc"], 5),
+                          "gross": round(buy["gross"], 4), "fee": round(buy["fee"], 4),
+                          "profit": round(buy["net"], 4), "roc": round(buy["roc"], 5),
                           "executable": buy["k"] >= MIN_ORDER_SHARES}
+    if not sanity["exclusive"] or not sanity["exhaustive"]:
+        out["sanity"] = sanity.get("why") or "ok"
     return out
 
 
@@ -295,7 +485,13 @@ async def load_tokens(client, tag: str, max_events: int, refresh: bool) -> List[
         os.makedirs(os.path.dirname(TOKEN_CACHE), exist_ok=True)
         with open(TOKEN_CACHE, "w") as f:
             json.dump(cache, f)
-    return [cache[s] for s in slugs if s in cache]
+    out = [cache[s] for s in slugs if s in cache]
+    # Structural check per board, once. Cheap (label parsing, no network) and it is the only
+    # thing standing between the identity and a silent 100%-of-stake loss on a partial board.
+    for ev in out:
+        if "sanity" not in ev:
+            ev["sanity"] = board_sanity(ev["legs"])
+    return out
 
 
 async def sweep(client, events: List[dict], log_fh) -> dict:
@@ -316,20 +512,25 @@ async def sweep(client, events: List[dict], log_fh) -> dict:
     fetch_s = time.time() - t0
     ts = datetime.now(timezone.utc).isoformat()
 
-    hits, quoted = [], 0
+    hits, quoted, illusion = [], 0, 0.0
     for ev in events:
-        res = evaluate_event(ev["legs"], books)
+        res = evaluate_event(ev["legs"], books, ev.get("sanity"))
         if not res:
             continue
         quoted += 1
+        illusion += max(0.0, res.get("short_gross_illusion", 0.0))
         if res.get("buy") or res.get("short"):
             row = {"type": "board", "ts": ts, "slug": ev["slug"], **res}
             hits.append(row)
             if log_fh:
                 log_fh.write(json.dumps(row) + "\n")
     if log_fh:
+        # `illusion` = what the OLD gross-optimal scorer would have claimed this sweep. Logged so
+        # the record shows, continuously, the size of the fee mirage rather than us having to
+        # remember that the first phase of this experiment was measuring one.
         log_fh.write(json.dumps({"type": "sweep", "ts": ts, "events": len(events),
                                  "quoted": quoted, "hits": len(hits),
+                                 "illusion": round(illusion, 3),
                                  "fetch_s": round(fetch_s, 3)}) + "\n")
         log_fh.flush()
     return {"ts": ts, "events": len(events), "quoted": quoted, "hits": hits,
@@ -348,15 +549,16 @@ def print_sweep(r: dict, top: int):
     if not hits:
         print("  no board is buyable below its guaranteed payout at ANY depth.")
         return
-    print(f"  {'dir':>6} {'legs':>5} {'k':>7} {'cost$':>9} {'profit$':>8} {'ROC':>7} {'exec':>5}  board")
+    print(f"  {'dir':>6} {'legs':>5} {'k':>7} {'cost$':>9} {'gross$':>7} {'fee$':>7} "
+          f"{'NET$':>8} {'ROC':>7} {'exec':>5}  board")
     for h in hits[:top]:
-        for d in ("buy", "short", "short_strict"):
+        for d in ("buy", "short"):
             if d in h:
                 b = h[d]
                 legs = b.get("legs", h.get("n", 0))
                 print(f"  {d:>6} {legs:>2}/{h.get('n',0):<2} {b['k']:>7.1f} {b['cost']:>9.2f} "
-                      f"{b['profit']:>8.2f} {b['roc']*100:>6.2f}% {str(b['executable']):>5}  "
-                      f"{h['slug'][:48]}")
+                      f"{b.get('gross',0):>7.3f} {b.get('fee',0):>7.3f} {b['profit']:>8.3f} "
+                      f"{b['roc']*100:>6.2f}% {str(b['executable']):>5}  {h['slug'][:40]}")
     tot = sum(max(h.get("buy", {}).get("profit", 0), h.get("short", {}).get("profit", 0))
               for h in ex)
     print(f"  EXECUTABLE PROFIT THIS SWEEP: ${tot:.2f}")

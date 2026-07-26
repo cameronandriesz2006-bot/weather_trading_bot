@@ -117,7 +117,11 @@ def _create_trade_from_fill(db, row: WorkingOrder, lo: LimitOrder, state: Option
     trade = Trade(
         market_ticker=row.market_ticker, platform="polymarket", event_slug=row.event_slug,
         market_type="weather", bucket_label=row.bucket_label, direction=row.direction,
-        entry_price=lo.avg_fill_price, size=cash, fee=settings.WEATHER_FEE_RATE * cash,
+        # Polymarket's weather fee is TAKER-ONLY (feeSchedule takerOnly: true) — a resting order
+        # that gets hit pays nothing, and in fact earns a 25% rebate on the taker's fee. So a
+        # maker fill books a ZERO fee, not a rate * cash one. This is the only fee-free way to
+        # trade these markets and is the main economic argument for the maker leg.
+        entry_price=lo.avg_fill_price, size=cash, fee=0.0,
         model_probability=row.model_probability, market_price_at_entry=row.market_price_at_entry,
         edge_at_entry=row.edge_at_entry, bias_corrected=row.bias_corrected,
     )
