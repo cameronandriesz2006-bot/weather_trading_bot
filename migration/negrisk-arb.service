@@ -1,0 +1,18 @@
+[Unit]
+Description=negRisk arb scanner (Plan B / phase B0+B1 data collection)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/root/weather_trading_bot
+Environment=PYTHONPATH=/root/weather_trading_bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/weather_trading_bot/venv/bin/python -m backend.data.negrisk_arb_scan --loop 2 --quiet
+Restart=always
+RestartSec=10
+StandardOutput=append:/root/weather_trading_bot/logs/negrisk_arb_run.log
+StandardError=append:/root/weather_trading_bot/logs/negrisk_arb_run.log
+
+[Install]
+WantedBy=multi-user.target
