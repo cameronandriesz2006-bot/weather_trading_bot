@@ -428,7 +428,8 @@ async def generate_weather_signal(
     # books are the norm; the book-fraction cap scales the stake instead).
     min_liq = settings.WEATHER_EXTREME_MIN_LIQUIDITY if extreme_in else settings.WEATHER_MIN_LIQUIDITY
     max_rel = settings.WEATHER_EXTREME_MAX_REL_SPREAD if extreme_in else settings.WEATHER_MAX_REL_SPREAD
-    actionable = (net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
+    actionable = (settings.WEATHER_TAKER_ENABLED
+                  and net_edge >= settings.WEATHER_MIN_EDGE_THRESHOLD
                   and 0 < entry_price <= settings.WEATHER_MAX_ENTRY_PRICE
                   and market.liquidity >= min_liq
                   and market.volume >= settings.WEATHER_MIN_VOLUME
@@ -436,6 +437,9 @@ async def generate_weather_signal(
                   and market_gap_ok
                   and post_extreme_ok)
     filter_notes = []
+    if not settings.WEATHER_TAKER_ENABLED:
+        # Shadow mode: keep pricing and recording everything, just never enter.
+        filter_notes.append("taker leg OFF (shadow mode)")
     if not post_extreme_ok:
         if observed_bound is not None and not anchor_fresh:
             filter_notes.append(

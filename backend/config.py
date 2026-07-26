@@ -183,6 +183,16 @@ class Settings(BaseSettings):
     # on submit; 0.01 is the common weather-market tick).
     WEATHER_MAKER_TICK: float = 0.01
 
+    # --- Taker leg kill switch (2026-07-26) ---------------------------------------
+    # The Edge-2 same-day taker test FAILED its go/no-go at n=49: P&L -$287, bootstrap CI
+    # not above 0, Brier vs the market a wash, and avg predicted edge +25.8% against avg
+    # ACTUAL edge -6.5% — i.e. systematic overconfidence, not variance. With the maker leg
+    # already retired this is the last path that opens positions, so False puts the bot in
+    # pure SHADOW mode: it still scans, prices, records signals, runs the fillability probe
+    # and settles the open book — it just stops entering. Everything needed to keep
+    # measuring stays on; only the losing leg stops. Flip True to resume taking.
+    WEATHER_TAKER_ENABLED: bool = True
+
     # --- Post-extreme (same-day afternoon) gate (Edge-2 strategy, 2026-06-30) -----
     # The ONLY edge that survives out-of-sample is the same-day NOWCAST: once the day's
     # extreme is actually in (observed floor/ceiling active), our observed-anchored price
