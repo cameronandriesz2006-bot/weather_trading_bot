@@ -5,17 +5,25 @@ profitable at real book depth. So every row here is already a trade we would hav
 to take. This tool turns that stream of *observations* into a stream of *executions* and prices
 the result, including the capital you would have needed on hand.
 
-The three judgment calls that drive the headline, all exposed as flags so an auditor can move
-them:
+The judgment calls that drive the headline, all exposed as flags so an auditor can move them:
 
   --episode-gap   Consecutive profitable sweeps on one board are ONE standing mispricing, not
                   N of them. Rows are grouped into episodes; a gap longer than this starts a
-                  new one. Credit is taken at the FIRST row of each episode (arrival), never
-                  the peak — you cannot trade a price you only see in hindsight.
+                  new one. Credit is never taken at the peak — you cannot trade a price you
+                  only see in hindsight.
+  --credit-row    Which row of an episode the fill is priced at. The 2026-07-27 audit found
+                  that crediting the FIRST row (arrival) is zero-latency fiction: the scanner
+                  stamps ts AFTER the ~1s book fetch, so the arrival prices are already stale
+                  at their own timestamp and no order can reach the book before the next
+                  ~2s sweep. Default is therefore 2 — a trade only counts if its price
+                  SURVIVED to the following sweep, and it pays that surviving (usually worse)
+                  price; shorter-lived episodes are voided as missed. This one flag is a
+                  52% haircut on the log audited 2026-07-27. `--credit-row 1 --gas 0`
+                  reproduces the original (pre-audit) headline.
   --warmup        Mispricing already standing when the scanner booted is a one-time STOCK, not
                   flow. Episodes starting within this many seconds of t0 are dropped.
-  --gas           Per-position on-chain cost. Matters enormously: the median trade nets ~$0.055
-                  and the audit measured ~$0.019 convert + ~$0.005 redeem.
+  --gas           Per-position on-chain cost, default 0.024 (audit-measured ~$0.019 convert +
+                  ~$0.005 redeem). Matters enormously: the median trade nets ~$0.055.
 
 Reproducibility: pass --until so a growing log still yields the same numbers.
 
@@ -74,8 +82,15 @@ def resolution_time(slug: str, entry: datetime.datetime) -> datetime.datetime:
 
 
 def executions(boards: List[dict], t0: datetime.datetime, gap_s: float,
-               warmup_s: float, gas: float) -> List[dict]:
-    """One execution per standing mispricing, credited at arrival."""
+               warmup_s: float, gas: float, credit_row: int = 2) -> List[dict]:
+    """One execution per standing mispricing.
+
+    An episode shorter than ``credit_row`` rows is a price that vanished before any real order
+    could have landed — it is dropped as MISSED, not credited at $0 (no position, no gas).
+    Episodes long enough are priced at row ``credit_row``, i.e. at what was still on the book
+    one sweep after we first saw it, which is systematically less than arrival on the trades
+    that matter (fast competition eats the big ones between sweeps).
+    """
     out = []
     for side in SIDES:
         by_slug = collections.defaultdict(list)
@@ -95,11 +110,14 @@ def executions(boards: List[dict], t0: datetime.datetime, gap_s: float,
             if cur:
                 episodes.append(cur)
             for ep in episodes:
-                first = ep[0]
-                t = _ts(first["ts"])
-                if (t - t0).total_seconds() <= warmup_s:
+                t_seen = _ts(ep[0]["ts"])
+                if (t_seen - t0).total_seconds() <= warmup_s:
                     continue                      # left-censored stock, not flow
-                d = first[side]
+                if len(ep) < credit_row:
+                    continue                      # gone before an order could land: missed
+                fill = ep[credit_row - 1]
+                t = _ts(fill["ts"])
+                d = fill[side]
                 out.append({
                     "ts": t, "slug": slug, "side": side, "cost": d["cost"],
                     "gross_profit": d["profit"], "profit": d["profit"] - gas,
@@ -143,8 +161,11 @@ def main() -> None:
     ap.add_argument("--log", default=LOG)
     ap.add_argument("--until", default=None, help="ISO ts; ignore rows after it (reproducibility)")
     ap.add_argument("--episode-gap", type=float, default=300.0)
+    ap.add_argument("--credit-row", type=int, default=2,
+                    help="price the fill at this row of each episode; episodes shorter than "
+                         "this are voided as missed. 1 = the pre-audit zero-latency number.")
     ap.add_argument("--warmup", type=float, default=120.0)
-    ap.add_argument("--gas", type=float, default=0.0, help="per-position on-chain cost, $")
+    ap.add_argument("--gas", type=float, default=0.024, help="per-position on-chain cost, $")
     args = ap.parse_args()
 
     boards, sweeps = load(args.log, args.until)
@@ -158,7 +179,8 @@ def main() -> None:
     print(f"log      {args.log}")
     print(f"window   {t0:%Y-%m-%d %H:%M} -> {t1:%Y-%m-%d %H:%M} UTC  ({hours:.2f}h)")
     print(f"rows     {len(sweeps)} sweeps, {len(boards)} profitable-board rows")
-    print(f"params   episode-gap={args.episode_gap}s warmup={args.warmup}s gas=${args.gas}/position")
+    print(f"params   episode-gap={args.episode_gap}s credit-row={args.credit_row} "
+          f"warmup={args.warmup}s gas=${args.gas}/position")
 
     for side in SIDES:
         rs = [r for r in boards if side in r]
@@ -166,12 +188,13 @@ def main() -> None:
         noex = sum(1 for r in rs if not r[side].get("executable"))
         print(f"  {side:>5}: {len(rs)} rows, {bad} non-positive, {noex} below the 5-share minimum")
 
-    trades = executions(boards, t0, args.episode_gap, args.warmup, args.gas)
+    trades = executions(boards, t0, args.episode_gap, args.warmup, args.gas, args.credit_row)
     if not trades:
         print("\nno executions")
         return
     net = sum(x["profit"] for x in trades)
-    print(f"\n=== {len(trades)} executions, one per mispricing, credited at ARRIVAL ===")
+    label = "ARRIVAL (zero-latency)" if args.credit_row == 1 else f"row {args.credit_row} (survived a sweep)"
+    print(f"\n=== {len(trades)} executions, one per mispricing, credited at {label} ===")
     for side in SIDES:
         ts = [x for x in trades if x["side"] == side]
         if ts:
