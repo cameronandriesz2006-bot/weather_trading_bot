@@ -19,7 +19,13 @@ build/
 
 # Pre-reset DB archives (server-local runtime data; the .db can't travel via git
 # anyway, and the README only makes sense next to it — keep the whole dir local)
-archive/
+# (glob the CONTENTS, not the dir — git won't descend into an excluded directory,
+#  so `archive/` would make the negation below unreachable.)
+archive/*
+# ...but archive/weather-bot/ is retired SOURCE and DOCS, which must travel.
+!archive/weather-bot/
+# Except its runtime log blob (11MB of fillability-probe output, server-local).
+archive/weather-bot/logs/
 
 # Environment
 .env

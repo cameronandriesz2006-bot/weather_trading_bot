@@ -1,0 +1,633 @@
+{
+ "wf1_layers": [
+  {
+   "area": "Layer 1 \u2014 Edge / Thesis: is there a real, measurable forecast edge?",
+   "summary": "The bot's thesis is \"our 3-model ensemble prices temperature buckets better than the market.\" Measured against the 44 settled trades, that thesis is currently false and, worse, inverted. The \"edge\" is defined as nothing more than model_prob \u2212 market_price (sizing.py calculate_edge) \u2014 pure disagreement, with no falsifiable claim about where/why the market is mispriced. Testing whether that disagreement is predictive fails every monotonicity check with the sign REVERSED: bigger model-vs-market edge predicts FEWER wins (corr \u22120.24), MORE loss (corr(edge,pnl) \u22120.17\u2192\u22120.23 active), and a WIDER model-minus-market Brier gap (corr +0.23\u2192+0.27). The mechanism is gross overconfidence: the model's mean stated side-probability is 0.796 while it actually wins 0.545 (a +0.25 calibration gap), whereas the market's entry price is near-perfectly calibrated (0.533 stated vs 0.545 realized, gap \u22120.01). Because the 8% edge gate selects the model's LARGEST disagreements, it is a machine for harvesting the model's own biggest forecast errors. No active city with n>6 beats the market on Brier (tokyo 0.484 vs 0.249, nyc 0.485 vs 0.281, denver 0.644 vs 0.281); the only two cities where the model beats the market are Hong Kong (n=6) and the already-cut London (n=3), both small enough to be variance per the team's own memory.",
+   "findings": [
+    {
+     "title": "The 'edge' is anti-monotonic: larger model-vs-market disagreement predicts WORSE outcomes (the core thesis is inverted)",
+     "severity": "blocker",
+     "layer": "edge/thesis",
+     "gap": "A real edge must be monotonic: trades where the model disagrees more with the market should win more and have a better (lower) model-vs-market Brier gap. The opposite is true here. The 8% net-edge gate (WEATHER_MIN_EDGE_THRESHOLD) ranks and selects trades by the size of the model-vs-market disagreement, which is precisely where an overconfident model is most wrong \u2014 so the gate systematically selects the model's biggest forecast errors (a winner's-curse / adverse-selection-by-own-error).",
+     "evidence": "44 settled trades. corr(edge_at_entry, won)=-0.243; corr(edge, pnl)=-0.171; corr(edge, model-minus-market Brier)=+0.231. ACTIVE-only stronger: corr(edge,won)=-0.240, corr(edge,pnl)=-0.226, corr(edge,model-mkt Brier)=+0.265. Edge terciles (active): low-edge (avgE+0.23) win 62% pnl +53 Bmod 0.284\u2248Bmkt 0.253; high-edge (avgE+0.35) win 50% pnl -308 Bmod 0.356 vs Bmkt 0.234. Edge definition is literally model_prob-market_price (backend/core/sizing.py calculate_edge) wired in at backend/core/weather_signals.py:235.",
+     "fix": "Stop treating raw level-disagreement as edge. (1) Recalibrate first (see overconfidence finding) so stated prob = realized. (2) Re-define the gate to require center-AGREEMENT plus a measured shape/tail advantage, not a large center disagreement. (3) Add a standing monotonicity monitor (corr of edge vs realized win / Brier-gap) to the scoreboard; if it is not reliably positive, the bot has no edge and should not scale.",
+     "effort": "bigger-build",
+     "confidence": "high",
+     "profitability_impact": "Directly negative: the selection rule loses money. Active settled book is -$643 and the trades that most 'looked' like edge lost the most."
+    },
+    {
+     "title": "Model is grossly overconfident; the market is near-perfectly calibrated (this is the root cause of the negative edge)",
+     "severity": "blocker",
+     "layer": "forecast calibration",
+     "gap": "The bot's stated bucket probabilities are far too sharp. When it claims ~80% on a side it wins ~55%; the market it is betting against is essentially calibrated. So every 'edge' is mostly the model's overconfidence, not a real mispricing. The intraday-\u03c3 / \u03c3-floor / blend \u03c3-inflation (2.04) machinery has not produced calibrated probabilities on the traded slice.",
+     "evidence": "All 44 settled: model mean stated side-prob 0.796 vs realized win 0.545 (overconfidence gap +0.250). Market entry side-prob 0.533 vs realized 0.545 (gap -0.012, i.e. calibrated). Reliability buckets: model says 0.85 -> wins 0.50 (n=24); says 0.76 -> wins 0.59 (n=17). Aggregate model Brier 0.319 vs market 0.247 (mid) / 0.240 (entry-price) \u2014 model materially worse (directionally matches the lead auditor's 0.379 vs 0.287 on their subset).",
+     "fix": "Treat calibration as the prerequisite, gated metric. Widen/recalibrate the forecast-to-probability map (isotonic or Platt scaling of model_side-prob against realized outcomes; or raise \u03c3 until stated\u2248realized) and re-measure the reliability curve until the overconfidence gap is < ~0.05 BEFORE any edge gate is trusted. Until calibrated, the bot should size on the calibrated probability, not the raw ensemble fraction.",
+     "effort": "bigger-build",
+     "confidence": "high",
+     "profitability_impact": "This overconfidence is what makes the edge gate select losers; fixing it is the precondition for any profitable trading."
+    },
+    {
+     "title": "No active city with adequate sample beats the market \u2014 the forecast-skill thesis is unproven everywhere measurable",
+     "severity": "high",
+     "layer": "edge/thesis",
+     "gap": "The claim 'our ensemble prices buckets better than the market' should show at least one robust slice where model Brier < market Brier with n large enough to matter. It does not. The two cities that beat the market are tiny samples the team's own memory already flags as variance, and they are exactly the kind of n<=6 P&L leaders the city-cut memo warns not to trust.",
+     "evidence": "Per-city model vs market Brier (settled): hong_kong n=6 Bmod 0.148<0.257 (beats), london[cut] n=3 0.147<0.363 (beats) \u2014 both n<=6. Every other active city WORSE: tokyo n=10 0.484 vs 0.249 (-$951), nyc n=3 0.485 vs 0.281, denver n=1 0.644 vs 0.281, paris n=4 0.380 vs 0.259, chicago n=3 0.232 vs 0.199. Lead-time split (active): day-ahead n=15 Bmod 0.355 vs 0.259; same-day n=12 Bmod 0.393 vs 0.242 \u2014 both lose, same-day worse.",
+     "fix": "Hold the run-and-evaluate stance but make the success criterion explicit and per-slice: require model Brier < market Brier with a bootstrap 95% CI excluding 0 on the SAME traded buckets, per city and per metric, before allocating to that slice. Do not re-add or scale any city on P&L (variance trap). Tokyo in particular is a structural loser, not noise \u2014 investigate its settlement station/bias before continuing to trade it.",
+     "effort": "quick-win",
+     "confidence": "high",
+     "profitability_impact": "Prevents scaling into slices that are demonstrably worse than the market; concentrates any future capital only on a proven slice."
+    },
+    {
+     "title": "Edge is not a falsifiable mechanism \u2014 propose a sharper, measurable definition (distribution-shape, not level)",
+     "severity": "high",
+     "layer": "edge/thesis",
+     "gap": "The edge has no testable hypothesis about WHERE the market is wrong; it is 'we disagree with the price' (calculate_edge = model_prob - market_price). Against an empirically well-calibrated market, disagreement is mostly your own error. The market-gap guardrail already concedes the market nails the daily high/low MEAN \u2014 so any honest edge must come from distribution SHAPE around a similar mean, which the current edge definition does not isolate.",
+     "evidence": "backend/core/sizing.py calculate_edge returns model_prob - market_price with no mechanism. CLAUDE.md itself states 'a real edge must come from distribution SHAPE around a similar mean, not from disagreeing on the level.' Yet the gate fires on level disagreement: of the 44 trades, market mean side-price was 0.533 (near coin-flip) while the model staked ~0.80 confidence \u2014 i.e. it bets center-level disagreements, which the data shows are noise.",
+     "fix": "Re-pose the single sharpest edge as a pre-registered, measurable claim: 'On events where |model center - market-implied center| < 0.5F (centers agree), our full bucket distribution is better calibrated than the market's implied distribution.' Implement: (a) require center-agreement as a GATE (already have event_market_mean), (b) score the model's WHOLE implied distribution vs the market's via CRPS/multi-bucket Brier on resolved events, (c) only trade shoulder/tail buckets where the model's shape edge is positive, (d) prove it forward with a bootstrap CI on (market CRPS - model CRPS) excluding 0 before sizing up. This turns an anti-predictive 'disagreement' edge into a falsifiable shape edge.",
+     "effort": "bigger-build",
+     "confidence": "medium",
+     "profitability_impact": "If a shape edge exists it is the only honest source of profit on a market that already prices the mean correctly; if it does not, this test reveals there is no edge before more capital is lost."
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "python: brier+P&L by edge_at_entry tercile over 44 settled trades (DB copy)",
+     "result": "low-edge(avgE+0.23) win71% pnl+352 Bmod0.216~Bmkt0.217; mid win43% pnl+17 Bmod0.391/Bmkt0.286; high-edge(avgE+0.35) win50% pnl-157 Bmod0.347/Bmkt0.240. Edge is ANTI-monotonic."
+    },
+    {
+     "command": "python: corr(edge_at_entry, {won,pnl,model-minus-market Brier})",
+     "result": "all44: corr(edge,won)=-0.243, corr(edge,pnl)=-0.171, corr(edge,Bmod-Bmkt)=+0.231. active: -0.240, -0.226, +0.265. All signs are the OPPOSITE of a real edge."
+    },
+    {
+     "command": "python: calibration of model stated side-prob vs realized win + market calibration",
+     "result": "model mean 0.796 vs realized 0.545 (gap +0.25, overconfident); market entry 0.533 vs realized 0.545 (gap -0.01, calibrated). Buckets: model 0.85->win0.50 (n24), 0.76->win0.59 (n17)."
+    },
+    {
+     "command": "python: per-city + per-metric + lead-time model vs market Brier (settled)",
+     "result": "Only hong_kong(n6,0.148<0.257) & london[cut](n3,0.147<0.363) beat market. tokyo 0.484 vs 0.249(-951), nyc 0.485/0.281, denver 0.644/0.281, paris 0.380/0.259, chicago 0.232/0.199. day-ahead Bmod0.355/0.259, same-day 0.393/0.242 \u2014 both lose."
+    },
+    {
+     "command": "python -c inspect.getsource(calculate_edge)  (backend/core/sizing.py)",
+     "result": "edge = model_prob - market_price, pick max(up_edge,down_edge). Confirms 'edge' is pure disagreement with no mispricing mechanism."
+    }
+   ]
+  },
+  {
+   "area": "Layer 6 \u2014 Live Execution (maker/taker, order-book sim, go-live readiness)",
+   "summary": "The hybrid execution layer is well-architected on paper (one Executor interface, SimulatedExecutor vs gated LivePolymarketExecutor) and the TAKER book-walk is genuinely faithful: it walks each token's OWN ask ladder cheapest-first, charges the real VWAP, handles empty books (returns None) and thin books (shrinks the stake to fill.cash on partial fills). The MAKER path is the problem. Measured against the live DB copy, the day-ahead maker harvests almost nothing: of $5,715 intended resting cash, only $212 filled (3.7%); of 29 orders, 0 filled fully and only 11 produced a Trade, all still pending settlement \u2014 so the maker edge is completely unproven. The root cause is structural: orders rest for only a 6h GTD window placed 24-48h before the target day, i.e. in the thinnest overnight window, far from the same-day flow the whole \"~$1k/bucket\" thesis depends on. Separately, going live is NOT a flag flip: SIMULATION_MODE gates a LivePolymarketExecutor that is never instantiated anywhere, the same-day taker path has zero live-order code (it writes a DB row directly), there are no Polymarket signing creds wired, and there is no reconciliation/balance/allowance code. Finally the control endpoints (/api/bot/reset wipes the book) are unauthenticated behind CORS '*'.",
+   "findings": [
+    {
+     "title": "Day-ahead maker harvests ~3.7% of intended cash \u2014 the 6h TTL rests in the wrong window",
+     "severity": "high",
+     "layer": "execution/maker",
+     "gap": "The whole maker thesis is that ~$1k/bucket of flow crosses over the target day and is capturable by a patient resting order. But orders rest for only WEATHER_MAKER_TTL_SECONDS=21600 (6h, config.py:146) and are posted 1-2 days BEFORE the target date (scheduler routes is_day_ahead -> maker). So each order rests for 6h in the overnight/day-before window, then expires the night before the extreme forms \u2014 capturing almost none of the same-day flow. Result: the day-ahead maker captures essentially nothing even in an optimistic sim.",
+     "evidence": "DB copy working_orders (n=29): SUM(intended_cash)=$5,715 vs SUM(filled_shares*avg_fill_price)=$212 -> 3.7% cash fill; 0 orders status=FILLED, 25 EXPIRED; per-order fill% mostly 0-7% (one tokyo outlier 76%). 11 maker Trades produced, ALL settled=0/pnl=None -> maker edge entirely unproven. Order-timing dump: every order rest=6.0h, created 06-28/06-29 for target_date 06-29/06-30/07-01 (rests ~1-2 days early). config.py:146 WEATHER_MAKER_TTL_SECONDS=21600.",
+     "fix": "Treat realized fill rate as the kill-switch gate it was meant to be \u2014 it is currently failing (~4%). Options: (a) rest closer to the target day with a longer/settlement-aware GTD that cancels just before the extreme forms instead of a flat 6h; (b) re-post/refresh the resting order across the day so it is live during the bulk of flow; (c) accept that day-ahead resting depth is too thin and shift more buckets to a same-day passive-limit (join-the-bid) approach. Measure realized fill rate per city before drawing any directional Brier conclusion.",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "Maker fill simulation is optimistic (aggressor side ignored, queue snapshot never grows)",
+     "severity": "medium",
+     "layer": "execution/SimulatedExecutor",
+     "gap": "Two modeling choices make simulated fills an upper bound on real fills, so once Finding 1 is fixed the sim will over-state fills. (1) poll_order credits a fill from EVERY trade print at/through the limit (execution.py:296 `hits = t.price <= order.price` for a BUY) regardless of aggressor side \u2014 the Data API /trades does not reliably give the taker side, so buyer-initiated prints that would NOT have hit our resting bid still count as fills. (2) _queue_ahead is snapshotted once at placement (execution.py:249) and only DECREASES as flow consumes it (lines 301-304); orders that join ahead of us at a better/equal price during the order's life are never added back, understating our true queue position.",
+     "evidence": "execution.py:273-279 (_queue_ahead computed once from placement book); execution.py:292-308 (poll consumes queue then fills, no re-snapshot); execution.py:296 (price-only hit test, no side filter). The docstring itself admits 'Queue position is approximated from that snapshot \u2014 the one thing a sim cannot observe perfectly' (lines 40-42).",
+     "fix": "When aggressor side is unavailable, only credit fills from prints strictly AT the limit price (the conservative maker-fill assumption), and re-snapshot _queue_ahead from the live book on each poll so newly-joined size ahead of us is counted. Never use the sim's fill count for the go-live gate \u2014 only realized live fills.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "'Flip the flag to go live' is false \u2014 no live execution is actually wired",
+     "severity": "high",
+     "layer": "execution/go-live",
+     "gap": "SIMULATION_MODE gates only LivePolymarketExecutor._guard(), but LivePolymarketExecutor is never instantiated anywhere in backend/ (both maker entry points hardcode SimulatedExecutor; the taker writes a Trade row directly with no Executor at all). So: (a) flipping SIMULATION_MODE=False changes nothing \u2014 there is no backend-selection wiring; (b) the same-day TAKER path (the deep-book majority of flow) has ZERO live-order code \u2014 scheduler.py:222-251 builds a Trade() and db.add()s it; (c) no Polymarket signing creds exist (config has only POLYMARKET_API_KEY for Gamma reads \u2014 no private key / funder / API-cred env); (d) no reconciliation, balance, USDC-allowance, or position-sync code; LivePolymarketExecutor.poll_order naively assumes every fill is at order.price (execution.py:447).",
+     "evidence": "grep: LivePolymarketExecutor referenced only in its own class def/docstring; both maker paths use `SimulatedExecutor(LiveMarketData(...))` (maker.py:209,308). scheduler.py:222-251 taker builds Trade directly, no executor. config.py: POLYMARKET_API_KEY only; KALSHI_PRIVATE_KEY_PATH present but no POLYMARKET private key/funder. No reconcile/balance/allowance code for Polymarket (grep clean).",
+     "fix": "Live-readiness checklist: (1) pip install + pin py-clob-client; (2) add a factory that selects LivePolymarketExecutor vs SimulatedExecutor on SIMULATION_MODE and threads it through BOTH maker.py and the scheduler taker; (3) BUILD a live taker submission (FAK/FOK market order via py-clob-client) \u2014 the taker has no live path today; (4) wire POLYMARKET_PRIVATE_KEY + funder + signature_type into config/.env and derive API creds; (5) USDC allowance/approval + balance check before first order; (6) reconciliation loop: poll real fills (multi-price), handle partial/rejected orders, sync open WorkingOrders + positions against the CLOB on restart; (7) gate the control endpoints (see separate finding).",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "Control endpoints unauthenticated behind CORS '*' \u2014 /api/bot/reset wipes the book",
+     "severity": "high",
+     "layer": "api/security (F2)",
+     "gap": "All control endpoints are unauthenticated and CORS allows any origin. /api/bot/reset deletes ALL trades and resets bankroll to INITIAL_BANKROLL; /api/bot/start, /api/bot/stop, /api/run-scan, /api/settle-trades are equally open. Anyone who can reach port 8000 (or a malicious page in a browser that can, via CORS '*') can wipe the scoreboard or halt the bot. This is a hard blocker before any non-localhost exposure and matters even more once real money is involved.",
+     "evidence": "main.py:27-29 add_middleware(CORSMiddleware, allow_origins=['*']); main.py:957 /api/bot/start, 973 /api/bot/stop, 986 /api/bot/reset (delete()+reset bankroll, lines 990-998), 394 /api/run-scan, 428 /api/settle-trades \u2014 none take an auth dependency (only Depends(get_db)).",
+     "fix": "Add an API-key/bearer dependency (or bind to localhost + SSH-tunnel only, per the existing deploy plan) on every mutating endpoint, and restrict CORS allow_origins to the known dashboard origin. Quick win and a precondition for any deploy.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "Maker fills are scored against the STALE day-ahead price, not the price at fill",
+     "severity": "medium",
+     "layer": "execution/scoreboard-coupling",
+     "gap": "A maker fill happens hours after placement, but _create_trade_from_fill copies market_price_at_entry and edge_at_entry straight from the WorkingOrder row, which were set at PLACEMENT time (day-ahead). The run plan says to 'judge on Brier' using market_price_at_entry as the market baseline \u2014 but for maker trades that baseline is the day-ahead price, not the market price when we actually filled, so the model-vs-market Brier comparison is apples-to-oranges for maker trades. With 0 maker trades settled yet, this will silently bias the first directional read.",
+     "evidence": "maker.py:120-122 _create_trade_from_fill sets market_price_at_entry=row.market_price_at_entry / edge_at_entry=row.edge_at_entry; maker.py:271-273 those row fields are set to signal.market_probability / signal.edge at POST time. DB: all 11 maker trades carry placement-time prices; fills occurred up to ~6h later.",
+     "fix": "Capture the market mid at FILL time (the poll already fetches the live book via LiveMarketData) and store that as market_price_at_entry for maker trades, or tag maker trades so the scoreboard compares them against a fill-time baseline. Keeps the Brier verdict honest once maker fills accumulate.",
+     "effort": "quick-win",
+     "confidence": "medium"
+    },
+    {
+     "title": "Fee charged as an absolute price addend in the taker (unit bug, latent)",
+     "severity": "low",
+     "layer": "execution/cost-model",
+     "gap": "The taker computes cost in PRICE space as `cost = (entry_price - side_mid) + settings.WEATHER_FEE_RATE`, adding the fee FRACTION as if it were an absolute price, while the maker correctly books fee = WEATHER_FEE_RATE * cash (a fraction of notional). Harmless today because WEATHER_FEE_RATE=0.0 (which is consistent with Polymarket's current zero-fee CLOB), but if a non-zero fee is ever set (e.g. when enabling Kalshi) the taker edge screen would mis-charge it.",
+     "evidence": "weather_signals.py:335 `cost = (entry_price - side_mid) + settings.WEATHER_FEE_RATE`; maker.py:120 `fee=settings.WEATHER_FEE_RATE * cash`; config.py:96 WEATHER_FEE_RATE=0.0.",
+     "fix": "Make the taker charge the fee as a fraction of notional consistently (subtract WEATHER_FEE_RATE * price, or fold into the same per-notional fee the maker uses), so a non-zero fee behaves correctly across both paths.",
+     "effort": "quick-win",
+     "confidence": "high"
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "python sqlite: SELECT status,count(*) FROM working_orders GROUP BY status; SUM(intended_cash) vs SUM(filled_shares*avg_fill_price)",
+     "result": "29 orders: 25 EXPIRED, 3 OPEN, 1 PARTIALLY_FILLED, 0 FILLED. Intended $5,715 vs filled $212 = 3.7% cash fill rate. 12 orders had any fill; 11 produced Trades."
+    },
+    {
+     "command": "python sqlite: JOIN working_orders w ON w.trade_id=trades.id \u2014 maker trade P&L",
+     "result": "11 maker-produced Trades, ALL direction=no, ALL settled=0/pnl=None/result=pending -> maker edge unproven (0 settled). Per-order intended-vs-filled: 1%,3%,3%,3%,5%,7%,7%,34%,76% (median ~3%)."
+    },
+    {
+     "command": "python sqlite: created_ts/expiration_ts/target_date per working order",
+     "result": "Every order rest window = 6.0h; orders placed 06-28/06-29 for target_date 06-29/06-30/07-01 (1-2 days early), confirming the 6h GTD rests well before same-day flow."
+    },
+    {
+     "command": "grep -rn 'LivePolymarketExecutor|SimulatedExecutor' backend/",
+     "result": "LivePolymarketExecutor only appears in its own class def/docstring \u2014 never instantiated. Both maker paths hardcode SimulatedExecutor(LiveMarketData(...)) (maker.py:209,308). Taker writes Trade directly (scheduler.py:238)."
+    },
+    {
+     "command": "grep -niE 'POLYMARKET.*(key|funder|private)|reconcil|allowance|balance' backend/config.py backend/",
+     "result": "config has only POLYMARKET_API_KEY (Gamma reads); no Polymarket private key/funder/signing creds; no reconciliation/allowance code (only Kalshi get_balance). Confirms no live execution wiring."
+    },
+    {
+     "command": "grep -nE '@app.(post|get)|allow_origins' backend/api/main.py",
+     "result": "CORS allow_origins=['*'] (main.py:29); /api/bot/start(957), /api/bot/stop(973), /api/bot/reset(986, deletes all trades+resets bankroll), /api/run-scan(394), /api/settle-trades(428) all unauthenticated."
+    }
+   ]
+  },
+  {
+   "area": "Layer 7 \u2014 Risk &amp; Bankroll (sizing caps, correlation, drawdown, circuit breakers)",
+   "summary": "The sizing/exposure caps are mechanically sound and were respected in the live data: the 7% city-day cap held (max observed $587/5.9%), the 20% allocation cap held (peak open $2,273 = exactly 20% of the then-$11.4k bankroll \u2014 the apparent 22.7%-of-$10k is correct bankroll-relative scaling, not a breach), and max open count peaked at 16/20. Within a city-day the buckets are mutually-exclusive outcomes (empirically 5/6 multi-bucket groups had MIXED win/loss), so the 7% stake cap is a genuine per-event downside bound (loss = \u2212size). The real risk gaps are in the CIRCUIT BREAKERS, not the caps: (1) the daily-loss breaker is set at 15% (\u2212$1,500) = 7.1\u00d7 the measured daily P&L std and 2.8\u00d7 the worst observed day, and it is realized-only + blind to unrealized + lagged a full day by end-of-day batch settlement, so it has never come close to firing; (2) there is NO cumulative/trailing-drawdown stop, and the actual loss mode is a slow bleed (\u2212$154/day) that already produced a \u2212$1,264 / \u221212.6% active-book drawdown with zero breaker engagement. Sizing-wise, fractional-Kelly 0.05 is being applied to a book with a NEGATIVE realized edge (model Brier 0.379 vs market 0.287; \u2212$34/settled-trade; 48% win rate with a 0.72 win/loss payoff ratio) and unfavorable entry prices (median 0.56, cap 0.70 needs ~70% win-rate to break even) \u2014 Kelly presupposes a real edge, so the caps currently just set the speed of the bleed.",
+   "findings": [
+    {
+     "title": "Daily-loss breaker is set ~7x too loose AND is realized-only/lagged, so it cannot protect capital in the real loss regime",
+     "severity": "high",
+     "layer": "risk/circuit-breaker",
+     "gap": "DAILY_LOSS_LIMIT_FRACTION=0.15 halts trading only after a single UTC-day realizes a \u2212$1,500 loss. Measured active-book daily P&L std is $210 and the worst observed day was \u2212$535, so the breaker sits at 7.1x daily sigma / 2.8x the worst day \u2014 it has never approached firing. Worse, it (a) counts only realized pnl of trades that settled since UTC-midnight, (b) ignores all unrealized mark-to-market on open positions, and (c) temperature markets settle in batches at local day-end (settlements cluster at 00:00 UTC n=20 and 15:00 UTC n=16), while new entries cluster at 00:00 UTC n=39. So 'today's realized pnl' is dominated by YESTERDAY's positions settling; the breaker effectively gates the NEXT day on the PRIOR day's result and reads ~$0 while today's fresh exposure is still open.",
+     "evidence": "backend/config.py:53 DAILY_LOSS_LIMIT_FRACTION=0.15; backend/core/scheduler.py:144-155 daily_pnl query filters Trade.settled==True AND settlement_time>=today_start(UTC midnight), no unrealized term. Measured (DB copy, active cities, 27 settled): daily realized P&L = [-227,-66,+171,-122,-535,-145], std=$210, worst=-$535; breaker=-$1500 = 7.1x std, 2.8x worst day. Settlement-hour histogram: 00h=20, 15h=16, 22h=4, 23h=3; entry-hour 00h=39. Breaker never fired across the whole run.",
+     "fix": "Tighten the daily breaker to ~5% (-$500 ~= 2.4 sigma) and make it forward-looking: add the current unrealized mark-to-market of open positions (the dashboard already computes per-side live prices) into the daily-loss measure so a day where 20% of bankroll is open and trending to loss halts NEW entries before settlement, instead of one day late.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "No cumulative / trailing-drawdown stop \u2014 the bot bleeds indefinitely through a slow drawdown the daily breaker can't see",
+     "severity": "high",
+     "layer": "risk/circuit-breaker",
+     "gap": "The only loss circuit-breaker is the per-UTC-day one above. There is no rolling-window or peak-to-trough equity stop. The empirical loss mode is not a single catastrophic day but a persistent bleed: the active book lost money on 4 of 6 settle-days, averaging \u2212$154/day, producing a near-monotonic realized equity slide from +$256 to \u2212$1,008 \u2014 a \u2212$1,264 (\u221212.6% of $10k) drawdown \u2014 with the daily breaker never engaging because no single day breached 15%. Nothing in the code would stop this if it continued to \u221230%, \u221250%, etc.",
+     "evidence": "DB copy, active cities: realized equity curve (running $) = [256,6,-129,17,-227,-64,-9,-68,-293,-538,-301,-90,-321,-122,38,78,-174,-244,-506,-616,-537,-339,-275,-537,-779,-1008,-924]; max drawdown \u2212$1,264 (\u221212.6%); final \u2212$924 over 27 settled trades / 6 days = \u2212$154/day. grep of scheduler.py confirms the only breaker is the daily realized one (lines 144-155); no trailing-equity logic exists.",
+     "fix": "Add a trailing-drawdown halt: track peak realized equity (or rolling N-day realized P&L) in BotState and pause weather trading when equity falls e.g. >=8-10% from its peak or the trailing 7-day realized P&L <= -X%, requiring a manual/automatic re-enable. This is the control that actually matches a slow-bleed loss mode; the daily breaker only catches a one-day blow-up.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "Fractional-Kelly 0.05 is sizing a negative-edge book with unfavorable payoff odds; the caps only set the bleed rate",
+     "severity": "medium",
+     "layer": "risk/sizing",
+     "gap": "calculate_kelly_size applies KELLY_FRACTION=0.05 (cap 2.5%/trade) under the assumption of a true positive edge. The active book's realized edge is NEGATIVE (model Brier 0.379 > market 0.287; \u2212$34/settled-trade), and the payoff structure is unfavorable: entries are mostly 'no' bought at high prices (median entry 0.56, 60% of trades >=0.55, cap WEATHER_MAX_ENTRY_PRICE=0.70), so a 0.70 buy wins only $0.43 per $1 and needs ~70% win-rate to break even while the model wins 48% with a 0.72 avg-win/avg-loss ratio. Kelly is mathematically valid only with a real edge; here it just determines how fast capital erodes. Kelly also assumes INDEPENDENT bets, which the 20%-across-correlated-forecasts book violates.",
+     "evidence": "backend/config.py:37,45 KELLY_FRACTION=0.05 / KELLY_MAX_TRADE_FRACTION=0.025; config.py:71 WEATHER_MAX_ENTRY_PRICE=0.70; backend/core/sizing.py:67-76. DB copy active: mean \u2212$34.2/trade, win 48%, avg win +$145 vs avg loss \u2212$201 (ratio 0.72); entry-price median 0.56, mean 0.55, 36/60 trades >=0.55.",
+     "fix": "Treat the edge as unproven: cut KELLY_FRACTION further (e.g. 0.02) or switch to flat tiny stakes, and lower WEATHER_MAX_ENTRY_PRICE (e.g. to ~0.55-0.60) so trades aren't booked at odds that demand a win-rate the model isn't hitting \u2014 until a forward out-of-sample sample shows model Brier < market Brier. Do not run meaningful Kelly sizing while realized edge is negative.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "City-day cap bounds single-event loss well, but cross-city SYSTEMATIC (regime) correlation is bounded only by the 20% allocation cap",
+     "severity": "medium",
+     "layer": "risk/correlation",
+     "gap": "WEATHER_MAX_CITY_DAY_FRACTION=0.07 (keyed on (city,date), lumping high+low \u2014 conservative) successfully bounds one forecast's downside, and within a city-day the buckets are mutually-exclusive outcomes (not a blow-up). The unhedged exposure is the SYSTEMATIC forecast bias: the known GFS/blend cold-bias on highs in a heat regime mis-prices ALL cities' high markets the same way on the same day, and the only thing capping that joint exposure is the 20% allocation cap. 20% of bankroll moving together on one regime call is a >2-sigma daily-loss event that the (15%, lagged) daily breaker will not catch.",
+     "evidence": "backend/config.py:124,132; backend/core/scheduler.py:200-206 cd_key=(city_key,target_date). DB copy: max city-day stake $587 (5.9%, under 7% cap) \u2014 cap respected; peak simultaneous open $2,273 = 20% of the then-bankroll (cap respected). Within-city-day-metric multi-bucket groups: 5 of 6 had MIXED win/loss results (only tokyo 06-28 all-same), confirming the 7% cap is a real per-event loss bound. The residual risk is cross-city same-metric: 6 active cities x 2 metrics can all ride one regime under only the 20% umbrella.",
+     "fix": "Add a per-metric portfolio sub-cap (e.g. total open stake on all-HIGH markets and all-LOW markets each <= ~10-12% of bankroll), or a single 'directional regime' cap, so a systematic high-side bias can't load the full 20% allocation onto one correlated bet. Combine with the trailing-drawdown stop (finding above), which is the real backstop for systematic-bias loss the per-trade caps can't see.",
+     "effort": "quick-win",
+     "confidence": "medium"
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "python q4.py \u2014 position-size & city-day distribution from DB copy",
+     "result": "sizes n=60: min$1 median$157 p90$253 max$263 (2.63% \u2014 bankroll-relative 2.5% cap, scales with bankroll, OK). Max city-day stake $587 (5.9%, under 7% cap). 7 sizes >$250 are the cap scaling with a >$10k bankroll, not a breach."
+    },
+    {
+     "command": "python q5.py \u2014 realized equity curve & daily P&L, ALL vs ACTIVE",
+     "result": "ACTIVE (n=27 settled): final \u2212$924, max drawdown \u2212$1,264 (\u221212.6%), near-monotonic bleed. Daily realized: [-227,-66,+171,-122,-535,-145]; worst day \u2212$535 (\u22125.3%) vs \u2212$1,500 breaker. ALL-weather max DD \u2212$1,378."
+    },
+    {
+     "command": "python q6.py \u2014 max simultaneous open exposure, settlement/entry clustering, breaker timing",
+     "result": "Peak open stake $2,273 at 06-24 04:11 (= 20% of then-$11.4k bankroll, cap respected). Settlements cluster 00h UTC=20 / 15h=16 (day-end batches); entries cluster 00h=39. No day ever crossed the \u2212$1,500 'first_below' threshold."
+    },
+    {
+     "command": "python q8.py \u2014 bankroll at peak + maker working_orders",
+     "result": "Bankroll at exposure-peak ~$11,366 -> 20% cap=$2,273 = open stake exactly; NO cap breach. 29 working_orders mostly EXPIRED with 0/tiny fills \u2014 maker reserves full intended_cash against caps but rarely fills (conservative for downside; no double-count)."
+    },
+    {
+     "command": "python q9.py \u2014 per-trade & daily P&L vol (active)",
+     "result": "mean \u2212$34.2/trade, win 48%, avg win +$145 / avg loss \u2212$201 (ratio 0.72); daily std $210, mean \u2212$154/day. 15% breaker = 7.1x daily std / 2.8x worst day."
+    },
+    {
+     "command": "python q10.py \u2014 max open count + entry-price distribution",
+     "result": "Max simultaneous open count 16/20. Entry price median 0.56, mean 0.55, max 0.68; 60% of entries >=0.55 -> need >55% win-rate to break even while model wins 48%."
+    }
+   ]
+  },
+  {
+   "area": "Layer 5+8 \u2014 Storage, Reproducibility, Results Integrity",
+   "summary": "The headline financials reconcile cleanly to the raw DB: bot_state (bankroll $10,211.20 / +$211.20 / 24 wins / 60 trades) equals the sum of ALL 44 settled weather trades, and /api/stats (bankroll $9,075.85 / -$924.15 / win 0.481 / 27 settled) equals the active-city subset; the $1,135 gap is exactly the parked cities (london +825, miami +514, seoul -204, nyc-bucket -281). So the +$211 \"profit\" is an artifact of scope \u2014 the active book the bot actually trades is -$924, Brier 0.372 (model) vs 0.252 (market). The deeper problem is reproducibility: a trade's forecast, order book, obs-so-far and bias are NOT persisted as structured data \u2014 they live only inside a free-text `reasoning` string, and Open-Meteo forecasts are overwritten each run, so you can never recompute a model probability or independently re-grade a loss. The trade-to-signal link is a fragile \"most-recent-unexecuted\" heuristic that already mislinks 1 of 60 trades, corrupting any join back to a trade's own reasoning/liquidity. Results integrity is recoverable (the ledger is consistent), but the system can show you THAT it lost without the data to diagnose WHY.",
+   "findings": [
+    {
+     "title": "No point-in-time snapshot of raw inputs \u2014 trades can't be reproduced or re-graded; blocks diagnosing why the model loses to the market",
+     "severity": "high",
+     "layer": "Storage / Reproducibility",
+     "gap": "The only forecast record is a free-text string. backend/models/database.py Signal/Trade have NO structured columns for the ensemble mean, sigma_eff, member count, bias applied, pricing_center, obs-so-far, lead-days, or the consumed order-book ask levels. All of it is baked into signal.reasoning, e.g. signal 3: 'Ensemble: 19.0C (bias -0.2 -> 19.1C) +/- 1.3C (192 members) ... fill VWAP 44% over 2 lvl (best ask 43%)'. Open-Meteo ensemble runs are overwritten each cycle, so once the scan passes the inputs are gone forever. Consequence: you cannot recompute model_probability from inputs, cannot verify the fill VWAP against the book that existed at entry, cannot confirm the obs-floor fired, and cannot reproduce ANY result. The maker path is worse \u2014 a PARTIALLY_FILLED working order (sim-02010dc0, 5 sh @0.66) stores only filled_shares/avg_fill, never the trade-tape it filled against, so simulated maker fills (the live execution thesis) are unauditable. This is the exact data needed to answer the core question 'why is model Brier 0.372 vs market 0.252'.",
+     "evidence": "database.py:74-111 (Signal cols: no forecast/orderbook/obs fields) and :23-58 (Trade same); DB query: forecast for trade 1 exists ONLY in signals.reasoning text; 644/1297 weather tickers have >1 signal row so the text is the sole per-scan record; working_orders has avg_fill but no tape snapshot.",
+     "fix": "At scan time, persist a structured point-in-time snapshot (new columns or a JSON blob on Signal): ensemble_mean, sigma_eff, n_members, bias_f, pricing_center, obs_so_far, lead_days, station, and the consumed ask levels (price/size list) used for the VWAP. For maker, snapshot the trade-tape window each fill was simulated against. Then any settled result can be recomputed and independently re-graded offline \u2014 the prerequisite for a real strategy backtest.",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "Two divergent sources of truth for bankroll/P&L, and /api/stats is internally inconsistent (caps and equity curve use a different bankroll than the headline)",
+     "severity": "high",
+     "layer": "Results Integrity / Reporting",
+     "gap": "bot_state (the ledger the bot SIZES off) says bankroll $10,211.20 / +$211.20; /api/stats (the headline read for the go/no-go decision) says bankroll $9,075.85 / -$924.15. Both reconcile to raw, but they are different scopes (all-cities vs active-only) presented as 'the' number, and the SAME /api/stats response mixes them: displayed bankroll is active-only ($9,075.85) while weather_max_allocation ($2,042.24 = 0.20*10,211.20) and daily_loss_limit ($1,531.68 = 0.15*10,211.20) are computed off the REAL bankroll \u2014 so the shown cap is 22.5% of the shown bankroll, not 20%. The /api/equity-curve endpoint sums ALL settled trades and ends at $10,211.20, contradicting the headline $9,075.85 by $1,135 on the same dashboard. And the displayed daily_pnl is active-only (main.py:341) while the breaker that actually halts trading sums ALL cities (scheduler.py:146-149) \u2014 the comment 'same window the breaker uses' (main.py:339) is wrong about scope. Net effect: the CLAUDE.md headline '+$211' is the all-cities figure; the active book is -$924, and a reader can't tell which capital is at risk or when the breaker trips.",
+     "evidence": "Recomputed from DB copy: bot_state bankroll 10211.20/pnl 211.20 = sum of all 44 settled; active-27 subset = -924.15 (matches /api/stats live: bankroll 9075.85, total_pnl -924.15). main.py:345 display_bankroll=INITIAL+active_pnl vs :353-354 caps off state.bankroll; :375 equity curve over all settled; scheduler.py:146-149 breaker all-cities vs main.py:341 active-only.",
+     "fix": "Show BOTH ledgers explicitly labeled (active-city scorecard AND true account), compute the displayed caps/percentages off the SAME bankroll that is displayed, make /api/equity-curve scope match the headline (or render two curves), and align the dashboard daily_pnl scope with the breaker (both all-cities) or fix the comment. Quick win, high clarity payoff for the go/no-go read.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "Trade-to-signal linkage is a fragile heuristic and already mislinks \u2014 corrupts post-hoc diagnosis",
+     "severity": "medium",
+     "layer": "Storage / Linkage",
+     "gap": "On execution the scheduler doesn't link the trade to the signal object that generated it; it re-queries for 'the most recent unexecuted weather signal with this market_ticker' and stamps that id (scheduler.py:242-249). The trade copies model_probability/market_price_at_entry from the in-memory signal, so the trade's own metrics stay correct, but signal_id can point at a STALE row for the same ticker from a different scan/day. Measured: 1 of 60 weather trades is mislinked \u2014 trade 51 -> signal 1537, same ticker 2702400 but model_probability 0.164 (trade) vs 0.073 (linked signal). The risk surface is large: 644/1297 tickers have multiple signal rows. Any analysis that joins a trade back to signal.reasoning / net_edge / liquidity / rel_spread (i.e. all the why-did-we-trade context) reads the wrong forecast for those rows.",
+     "evidence": "scheduler.py:242-249 (query by market_ticker + executed==False, order by timestamp desc); DB linkage check: 59 ok / 1 mismatch / 0 null over 60 weather trades; trade 51 mp 0.1638 vs signal 1537 mp 0.0728.",
+     "fix": "Persist the Signal first and set trade.signal_id from that exact row object (the generator already holds it in memory), or stamp a unique scan_id/uuid on both the Signal and Trade at creation and link on that. Eliminates the cross-day collision. Quick win.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "Schema drift: orphaned legacy tables persist despite documented removal",
+     "severity": "low",
+     "layer": "Storage / Hygiene",
+     "gap": "CLAUDE.md states 'DB tables are now only trades/signals/bot_state' and that AILog/ScanLog/BtcPriceSnapshot were removed 2026-06-14, but the live DB still contains btc_price_snapshots, ai_logs, and scan_logs (the ORM classes were deleted; the tables were never dropped). They are empty (0 rows) so they cause no accounting error, but they are a reproducibility/trust smell: documentation does not match the actual schema, and ensure_schema() only ever ADDs columns, never reconciles dropped models, so future audits can't trust the doc as ground truth.",
+     "evidence": "DB copy SELECT name FROM sqlite_master: tables = trades, btc_price_snapshots, bot_state, signals, ai_logs, scan_logs, working_orders; row counts 0/0/0 for the three legacy tables; contradicts CLAUDE.md 'Latest session (2026-06-14)'.",
+     "fix": "Drop the three orphaned tables in a one-off migration (or add them to ensure_schema's reconcile), and update CLAUDE.md to list the real table set (trades, signals, bot_state, working_orders). Trivial.",
+     "effort": "quick-win",
+     "confidence": "high"
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "python -c sqlite: SELECT * FROM bot_state; SUM(pnl) over settled weather trades",
+     "result": "bot_state bankroll=10211.20 total_pnl=211.20 total_trades=60 winning=24; sum of all 44 settled pnl=+211.20 => reconciles exactly (10000+211.20=10211.20)."
+    },
+    {
+     "command": "python sqlite: active-vs-parked split by event_slug + per-city P&L",
+     "result": "ACTIVE-only settled n=27 wins=13 win_rate=0.4815 pnl=-924.15 EV/trade=-34.23; PARKED n=17 pnl=+1135.35; ALL n=44 pnl=+211.20. Per city: tokyo -951(n10), nyc -281(n3), denver -230(n1), paris -142(n4), chicago +53(n3), hong-kong +626(n6); parked london +825, miami +514, seoul -204."
+    },
+    {
+     "command": "python sqlite: Brier model vs market over settled (model_probability vs market_price_at_entry vs settlement_value)",
+     "result": "ALL settled n=44: model Brier 0.319 vs market 0.247; ACTIVE n=27: model 0.372 vs market 0.252. Model loses to market both ways (matches lead-auditor ~0.379/0.287)."
+    },
+    {
+     "command": "curl -s localhost:8000/api/stats",
+     "result": "bankroll 9075.85, total_pnl -924.15, win_rate 0.4815, settled 27, weather_max_allocation 2042.24 (=0.20*10211.20 real), daily_loss_limit 1531.68 (=0.15*10211.20). Displayed bankroll != bankroll used for caps -> internal inconsistency confirmed."
+    },
+    {
+     "command": "python sqlite: trade->signal linkage integrity over 60 weather trades; multi-signal ticker surface",
+     "result": "59 ok, 1 mismatch (trade 51->signal 1537: mp 0.164 vs 0.073, same ticker 2702400), 0 null. 644/1297 tickers have >1 signal row = mislink surface."
+    },
+    {
+     "command": "python sqlite: tables + legacy row counts + forecast-snapshot check",
+     "result": "tables include orphaned btc_price_snapshots/ai_logs/scan_logs (all 0 rows). signals has NO forecast/orderbook/obs columns; forecast exists only in reasoning text. 0 settled trades missing settlement_value/model/market prob."
+    }
+   ]
+  },
+  {
+   "area": "Layer 2/3 \u2014 Data Integrity & Timezone/Alignment",
+   "summary": "The trade/signal store is overwhelmingly clean: zero NaN/NULL in critical fields, model_probability and entry_price all in-range, fee correctly 0 for Polymarket, direction always consistent with the model-vs-market edge sign, the MAX_ENTRY_PRICE (0.70) gate respected, and all 44 settled trades re-grade to EXACTLY their stored P&L/result (settlement join matches the exact bucket by the stable Polymarket market_id, settlement_value strictly in {0,1} \u2014 no wrong-bucket grading, no stale-price misgrade). The forecast/observed-floor/intraday/day-ahead-routing paths all consistently key off the market's station-local target_date with timezone=auto, so the decision-side day alignment is correct, and both date parsers extract an EXPLICIT year (the CLAUDE.md \"assumes current year\" wrong-year risk does NOT exist in any active path). Two real seams remain, both at clock/path boundaries: (1) the taker dedup ignores resting maker orders, which produced a confirmed DUPLICATE position on a single bucket; (2) the settlement \"day is over\" test uses the UTC calendar day instead of the station-local day, settling western cities up to 6h early and eastern cities 8h late. A minor signal\u2192trade mis-linkage rides on the same root cause as (1).",
+   "findings": [
+    {
+     "title": "Taker dedup ignores resting maker orders \u2192 duplicate position on one bucket (recurs daily for non-US cities at local-midnight)",
+     "severity": "high",
+     "layer": "execution/dedup",
+     "gap": "The same-day taker path only blocks re-betting a bucket it already holds as a settled-FALSE Trade; it does NOT check for an open WorkingOrder (resting maker order). A bucket flips from day-ahead (maker posts a resting order) to same-day (taker) exactly at the station's local midnight, and the maker order can still be resting (6h GTD TTL). The taker then opens a SECOND position on the identical bucket/side, doubling the correlated bet on one forecast outcome. The maker path's _already_active() checks both Trades and WorkingOrders; the taker path does not.",
+     "evidence": "market_ticker 2702400 (Tokyo high 26\u00b0C, 2026-06-29) has TWO open NO trades: id 51 (TAKER, entry 0.610, 2026-06-28 15:29:07, no WorkingOrder references it) and id 53 (MAKER fill of WorkingOrder id=8, created 2026-06-28 10:43:57, expires 16:44:57). At 15:29 the maker order was still OPEN, but scheduler.py:180-186 queries only Trade(market_ticker, settled==False) \u2014 so the taker never saw the resting order. It is the ONLY ticker with >1 trade, and the overlap scan confirms exactly this one case. Tokyo crosses local midnight at 15:00 UTC, so any maker order resting before 15:00 UTC is exposed daily.",
+     "fix": "In scheduler.py:180, replace the Trade-only `existing` query with a call to maker._already_active(db, signal.market.market_id) (which already checks BOTH open Trades and open WorkingOrders). One-line swap; the helper already exists.",
+     "effort": "quick-win",
+     "confidence": "high",
+     "profitability_impact": "Bounded by the per-city-day cap (_committed_and_counts counts working orders for allocation), so not a blowup, but it silently doubles correlated risk on individual buckets for Tokyo/Hong-Kong/Paris every day at the local-midnight crossover \u2014 a recurring leak that distorts realized variance and the per-bucket Kelly intent."
+    },
+    {
+     "title": "Settlement 'day is over' uses UTC date, not the station-local date \u2014 premature settlement up to 6h before the local day ends",
+     "severity": "medium",
+     "layer": "settlement/timezone",
+     "gap": "settlement.py:35 computes `day_is_over = target_date < date.today()` using the process UTC date, while the entire decision side (forecast timezone=auto, fetch_observed_extreme, station_local_hour, is_day_ahead) uses the station's IANA-local date. Because settlement can fire on `day_is_over AND decisive price (>0.99/<0.01)`, a western-hemisphere market becomes 'day_is_over' at UTC midnight, which is still evening at the station \u2014 so it can settle before the local day (and the day's true low) is finished.",
+     "evidence": "Empirically, all 44 settlements fire at 00:00\u201300:01 UTC (UTC-day rollover). Measured against each station's local day-end: Denver trade 48 settled -6.0h early (00:00 UTC = 18:00 MDT), Chicago -5.0h, Miami -4.0h; Hong Kong trades 4/11/15 settled +8.0h LATE. No actual misgrade occurred in the 44 (the decisive-price guard + highs locking by late afternoon protected them), but for LOW markets a late-evening cold push after a -6h settlement is a latent wrong-grade, and the clock is simply inconsistent with everything else.",
+     "fix": "Compute `day_is_over` from the station-local date: replace date.today() with weather.station_local_now(city_key).date() (city_key is available via parse_event_slug(event_slug)). This makes settlement use the same clock as forecasting/routing and removes both the early-settle risk and the ~8h Asian delay.",
+     "effort": "quick-win",
+     "confidence": "high",
+     "profitability_impact": "Mostly correctness/latency today, but eliminates a latent misgrade on low markets and tightens settlement timing so P&L is attributed to the correct local day."
+    },
+    {
+     "title": "Signal\u2192trade linkage grabs the latest UNEXECUTED signal for the ticker, mis-tagging a FILTERED (non-actionable) signal as executed",
+     "severity": "low",
+     "layer": "data-integrity/calibration",
+     "gap": "Both the taker (scheduler.py:242-249) and maker (maker.py:255-257) link a new trade to `the most recent Signal for this ticker with executed==False`, not the signal that actually generated the trade. When a stale prior-day signal that was FILTERED (failed the threshold) is the newest unexecuted row, it gets stamped executed=1 and linked, so signals.executed and the signal-level calibration are graded against the wrong model_probability.",
+     "evidence": "Of 83 executed signals, 1 is FILTERED-but-executed: signal 1537 ('[FILTERED] ... vol $378 < $500 ...', model_prob 0.073, never actionable) is linked to trade 51 whose own model_prob is 0.164 \u2014 a clear mismatch (|\u0394|=0.09). This is the same Tokyo 2702400 bucket as finding #1: when the taker placed trade 51 the real driving signal (1678) was already marked executed by the maker, so the query fell back to the stale FILTERED 1537. Only 1 case today, but it will recur wherever the duplicate/cross-path race occurs.",
+     "fix": "Link the trade to the actual signal object that produced it (pass signal.id through, e.g. persist the in-memory signal's DB id on generation, or match on (market_ticker, executed==False) AND model_probability\u2248signal.model_probability). Fixing finding #1 removes most occurrences; this hardens the calibration store regardless.",
+     "effort": "quick-win",
+     "confidence": "high",
+     "profitability_impact": "Corrupts the signals-table calibration/executed flag (a secondary analysis store); trade-level Brier/P&L are unaffected because the Trade carries its own model_probability snapshot."
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "python sqlite3: NULL/range/fee/size checks on trades+signals (60 trades, 2163 signals)",
+     "result": "0 NULL in all critical fields except pnl (16 unsettled). model_probability \u2208[0,1] for all trades+signals; market_price \u2208[0,1]; fee distinct = {0.0}; size>0 all; entry_price \u2208(0,1) all. 9 'entry<market_price_at_entry' all direction='no' (market_price_at_entry stores YES mid) \u2014 consistent, not a bug."
+    },
+    {
+     "command": "python sqlite3: GROUP BY market_ticker / (event_slug,bucket_label,direction) HAVING count>1",
+     "result": "Exactly ONE duplicate: ticker 2702400 has 2 open NO trades (id 51 taker, id 53 maker)."
+    },
+    {
+     "command": "python: overlap scan \u2014 taker trades vs open WorkingOrder window on same ticker",
+     "result": "TAKER trade 51 @2026-06-28 15:29:07 overlaps WorkingOrder id=8 (created 10:43:57, expires 16:44:57). Confirms taker placed into a resting maker order."
+    },
+    {
+     "command": "python: re-grade all 44 settled trades from direction+settlement_value vs stored pnl/result",
+     "result": "0 P&L mismatches; settlement_value distinct={0.0,1.0}; 0 result/pnl sign mismatches; 0 settled-before-entered. Settlement join + P&L math verified correct."
+    },
+    {
+     "command": "python+zoneinfo: settlement_time vs station-local day-end for all settled trades",
+     "result": "All settle at 00:00\u201300:01 UTC. Denver -6.0h, Chicago -5.0h, Miami -4.0h BEFORE local day-end; Hong Kong +8.0h AFTER. Confirms UTC-day settlement clock."
+    },
+    {
+     "command": "grep year-parsing in weather_markets.py / kalshi_markets.py",
+     "result": "Polymarket slug regex requires (?P<year>\\d{4}); Kalshi uses 2000+yy. No current-year assumption in any active path \u2014 flagged wrong-year risk is absent."
+    },
+    {
+     "command": "python: direction vs (model_prob vs market YES), entry_price>0.70, size dist",
+     "result": "0 direction/edge inconsistencies; 0 trades over the 0.70 entry cap; size min 0.73 / p50 166.6 / max 263.1."
+    }
+   ]
+  },
+  {
+   "area": "Results integrity \u2014 independent P&L & metrics recompute (the honest scoreboard)",
+   "summary": "I independently recomputed the entire post-reset book (all 60 trades are post the 2026-06-22 reset; 44 settled, 16 open) from the DB copy, net of fees and slippage, and every number ties out exactly to the live API (active settled n=27, win_rate 13/27=0.481, bankroll $9,075.85). The headline +$211 \"profit\" is a mirage: it is entirely +$1,135 of realized P&L from three CUT cities (london +$825 over n=3 all-wins, miami +$514, seoul \u2212$204) that the bot will never trade again, sitting on top of pure variance. The forward (active) book the bot actually trades is \u2212$924 over 27 settled trades, and the model is the WORSE probabilist than the market in every active slice \u2014 significantly so on the active book (model Brier 0.372 vs market 0.252; diff +0.120, bootstrap 95% CI [+0.009, +0.230], excludes 0), even though these are the trades WE selected as our best edges. No honest slice shows the model beating the market after costs. P&L is hopelessly noisy at this scale (active EV \u2212$34/trade, std $191 \u2192 needs ~119\u2013243 settled trades just to distinguish from zero), so Brier is the right metric \u2014 and the Brier verdict is already in and negative at n=27, not merely \"inconclusive.\" The bot_state.total_pnl vs /api/stats gap is fully explained: bot_state sums ALL settled cities (+$211), /api/stats sums active-only (\u2212$924), gap = the +$1,135 cut-city tail.",
+   "findings": [
+    {
+     "title": "No honest slice beats the market after costs \u2014 the model is the WORSE forecaster, significantly so on the active book",
+     "severity": "blocker",
+     "layer": "Results integrity / model edge",
+     "gap": "The project's go/no-go premise is 'does the model beat the price net of fees.' Independently recomputed, it does not in any slice; on the live (active) book it loses to the market on Brier with statistical significance, even on the trades the bot itself hand-picked as its best edges.",
+     "evidence": "recompute_pnl.py over the DB copy (44 settled, fees=$0). ACTIVE cities (n=27): model Brier 0.3719 vs market Brier 0.2516, diff +0.1203, bootstrap 95% CI [+0.0085, +0.2304] (excludes 0, t=+2.07) \u2192 market significantly better; total P&L \u2212$924.15, EV \u2212$34.23/trade. ALL (n=44): model 0.3194 vs market 0.2473, diff +0.072, CI [\u22120.014, +0.159]. CUT cities (n=17): model 0.2359 vs market 0.2403, diff \u22120.004, CI [\u22120.128, +0.126] = noise, and it's the parked book anyway. Brier is framing-invariant (verified: our-side framing == yes framing to 1e-9). Market Brier uses market_price_at_entry (P(YES) mid) \u2014 the benchmark is measured on OUR cherry-picked trades, which only strengthens the verdict. Deficit is broad across active cities, not one outlier: tokyo mBrier 0.484 vs kBrier 0.249 (n10, \u2212$951), nyc 0.485 vs 0.281, denver 0.644 vs 0.281 (n1), paris 0.380 vs 0.259; only hong_kong beats the market (0.148 vs 0.257, +$626).",
+     "fix": "Do not advance toward go-live on the current model. The lever is forecast calibration on the losing active cities (tokyo/nyc/denver/paris, where model Brier is ~2x the market's), not more data or more capital. Make 'model\u2212market Brier diff with its bootstrap CI' the explicit, headline go/no-go gate on the dashboard, computed per active city and overall; require the upper CI bound to fall below 0 before any live step.",
+     "effort": "bigger-build",
+     "confidence": "high",
+     "profitability_impact": "Trading this model live is currently negative-EV: the active book is \u2212$924 and the model is a significantly worse probabilist than the price it trades against."
+    },
+    {
+     "title": "Headline scoreboard (+$211 / $10,211 bankroll) is propped up entirely by cut-city tails and variance",
+     "severity": "high",
+     "layer": "Reporting integrity",
+     "gap": "bot_state.total_pnl (+$211) and bot_state.bankroll ($10,211) \u2014 the 'real account' figures cited in CLAUDE.md's clean-$10k-reset narrative \u2014 bank +$1,135 of P&L from three cities (london, miami, seoul) that were CUT from trading. The forward-looking book is \u2212$924. Anyone glancing at bankroll/total_pnl sees a winner where the active strategy is a loser.",
+     "evidence": "Exact reconciliation (recompute_pnl.py): ALL settled pnl = +$211.20 (n=44) = bot_state.total_pnl; ACTIVE-only pnl = \u2212$924.15 (n=27) = /api/stats.total_pnl; GAP = +$1,135.35 = cut cities (london +$825.45 n=3 hit 100%, miami +$513.78 n=8, seoul \u2212$203.88 n=6). bot_state bankroll 10000+211.20=$10,211.20; /api/stats bankroll 10000\u2212924.15=$9,075.85 (both verified against live API). The +$1,135 is itself variance: bootstrap 95% CI on the cut-city total is [\u2212$413, +$2,801], and london's +$825 is n=3 all-wins. /api/stats already isolates the active book correctly \u2014 the integrity gap is that bot_state and any consumer of it (and the 'clean $10k' framing) remain contaminated.",
+     "fix": "Stop using bot_state.total_pnl/bankroll as the scoreboard. Either (a) track an active-only realized-P&L field in bot_state, or (b) surface the active \u2212$924 figure (which /api/stats already computes) as THE headline everywhere, with the cut-city P&L shown separately and explicitly labeled 'parked, not forward'. Update the CLAUDE.md 'Current state' to lead with the active book, not the +$211.",
+     "effort": "quick-win",
+     "confidence": "high",
+     "profitability_impact": "Prevents a false-positive go-live decision driven by a +$211 number that is actually \u2212$924 of forward performance masked by parked-city tails."
+    },
+    {
+     "title": "P&L is uninformative at this scale; the Brier read is the right gate AND it is already negative \u2014 the negative verdict does not need 6\u20138 more weeks",
+     "severity": "high",
+     "layer": "Statistical methodology / decision timeline",
+     "gap": "The run-plan correctly says judge on Brier not P&L, but frames the current state as 'too noisy to conclude, wait for ~300\u2013400 trades.' The recompute shows the active-book Brier deficit is ALREADY statistically significant against the model at n=27 \u2014 the data is not merely inconclusive noise; it is currently a real signal that the model trails the market.",
+     "evidence": "Power analysis (recompute_pnl.py). P&L: active EV \u2212$34.23/trade, std $190.60 \u2192 n\u2248119 for 95% significance, \u2248243 for 80% power; ALL-book EV +$4.80 \u2192 n\u22486,705 / \u224813,684 (P&L can never settle this at realistic sample sizes \u2014 confirms judging on P&L is futile). Brier: active model\u2212market diff +0.1203, per-trade std 0.302, current t=+2.07 at n=27 (already significant), 80% power at \u224849 trades; ALL-book diff +0.072 reaches significance \u224865, 80% power \u2248132. So ~300\u2013400 trades is the right order ONLY for proving a small POSITIVE edge if one existed; the current sign is negative and already detectable. Equity curve: ALL peaked $11,505 then round-tripped to $10,211, max DD $1,378 (12.0%); ACTIVE peaked $10,256, trough $8,992, max DD $1,264 (12.3%).",
+     "fix": "Treat the n=27 active Brier deficit as an actionable negative signal now, not a pending result: pause adding trades/capital and fix calibration first. Keep the Brier-diff CI as the gate (P&L CI is uselessly wide: active total \u2212$924 has 95% CI [\u2212$2,806, +$991], straddling 0). Re-evaluate per-city so a future hong_kong-style edge isn't drowned by tokyo/nyc losses in the pooled number.",
+     "effort": "quick-win",
+     "confidence": "medium",
+     "profitability_impact": "Avoids burning 6\u20138 weeks (and capital) 'waiting for data' to confirm a deficit the data already shows, while pointing the fix at the specific cities dragging the book."
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "PYTHONPATH=/root/weather_trading_bot venv/bin/python recompute_pnl.py  (reusable script written to scratchpad/recompute_pnl.py)",
+     "result": "total=60 settled=44 open=16, all post-reset (2026-06-23..06-29). RECONCILE: ALL settled pnl=+$211.20 (n=44)=bot_state.total_pnl; ACTIVE-only=\u2212$924.15 (n=27)=/api/stats; CUT (london/miami/seoul)=+$1,135.35 (n=17)=the gap. bankrolls 10,211.20 vs 9,075.85 both verified. ALL: total +$211.20 CI[\u2212$2,358,+$2,845], EV +$4.80 (std 200.53), hit 0.545, mBrier 0.3194 vs kBrier 0.2473 diff +0.0721 CI[\u22120.014,+0.159]. ACTIVE: total \u2212$924.15 CI[\u2212$2,806,+$991], EV \u2212$34.23, hit 0.481 (13/27), mBrier 0.3719 vs kBrier 0.2516 diff +0.1203 CI[+0.0085,+0.2304] (market sig. better). CUT: total +$1,135.35 CI[\u2212$413,+$2,801], EV +$66.79, hit 0.647, mBrier 0.2359 vs kBrier 0.2403 diff \u22120.0044 CI[\u22120.128,+0.126] (noise). Max DD: ALL $1,378 (12.0%), ACTIVE $1,264 (12.3%). Power: P&L active n\u2248119 signif/\u2248243 power, ALL n\u22486,705/\u224813,684; Brier active already t=+2.07 at n=27, 80% power \u224849, ALL \u224865/\u2248132. Per-city settled: tokyo \u2212951(n10) mB0.484/kB0.249, hong_kong +626(n6) 0.148/0.257, nyc \u2212281(n3) 0.485/0.281, denver \u2212230(n1) 0.644/0.281, paris \u2212142(n4) 0.380/0.259, chicago +53(n3); london +825(n3,100%), miami +514(n8), seoul \u2212204(n6)."
+    },
+    {
+     "command": "curl -s localhost:8000/api/stats",
+     "result": "bankroll 9075.85, total_pnl \u2212924.15, win_rate 0.4815, total_trades 60, settled_trades 27, daily_pnl \u2212145.35 \u2014 matches my independently recomputed ACTIVE slice exactly (n=27, 13 wins, \u2212$924.15)."
+    },
+    {
+     "command": "Brier framing-symmetry + slippage/fee check (python over DB copy)",
+     "result": "model Brier yes-framing 0.319367 == our-side-framing 0.319367; market Brier 0.247266 == 0.247266 (identical to 1e-9) -> Brier comparison is side-invariant. Mean realized slippage (entry\u2212mid)=+0.0170 (paid above mid), baked into pnl. All fees = 0.0 -> reported P&L is net of fees AND realized slippage."
+    },
+    {
+     "command": "python check: NULLs, city extraction, entry-vs-market consistency",
+     "result": "0 NULLs in model_probability/market_price_at_entry/entry_price/size/fee; 16 NULL settlement_value/pnl = the 16 open trades. market_price_at_entry confirmed = P(YES) mid (entry_price = our-side mid + positive slippage on every trade). Cities: tokyo14 miami8 paris8 hong-kong9 london3 seoul6 nyc4 chicago4 denver4 = 60."
+    }
+   ]
+  }
+ ],
+ "backtest_text": "I have all measurements. Returning my structured findings.\n\n---\n\n**area**: Layer 3 \u2014 Backtest / Calibration Methodology (`backend/data/calibration_backfill.py`, `intraday_backtest.py`)\n\n**summary**: I reproduced the calibration backtest on the 6 active cities (334 resolved events, 3,502 buckets, 3,300 with market prices) and saved per-bucket records to `calib_records.json` for downstream agents. The harness is a *calibration/Brier check only* \u2014 it never simulates the trading rules, so it cannot tell you whether the strategy makes money. More seriously, the two numbers that make the model look competitive (\"model \u2248 market\" on contested buckets) are both artifacts: (1) the model Brier is reported at a swept *in-sample* sigma of 1.5\u00b0F, but the live bot actually prices day-ahead buckets at ~5.0\u00b0F \u2014 at the true live width the model loses to the market by 27% on the very buckets it trades; and (2) the \"market\" proxy is snapshotted at 06:00 UTC, which is 2-3pm local for Tokyo/Hong Kong \u2014 *after* the daily high has formed \u2014 so the market looks artificially sharp for exactly the Asian cities the bot loses worst on. All four sub-claims are measured below. None of this means an edge is unreachable; it means the current harness is too optimistic to detect that you don't yet have one, and the fixes are concrete.\n\n**findings**:\n\n---\n\n**FINDING 1 \u2014 (a) In-sample sigma snooping: model \"parity\" evaporates at the TRUE live width. [blocker / quick-win to re-score]**\n\nThe harness sweeps sigma over the SAME events it scores (`SIGMA_GRID`, `_records_at_sigma`, picks the min-Brier `sig_star`, lines 56/215/292-304) and reports model Brier at that `sig*`. My reproduction: `sig* = 1.50\u00b0F`, and the headline contested comparison reads `market 0.1750` vs `model@sig*=1.5 = 0.1746` \u2014 i.e. \"parity,\" the basis of the run-plan's \"judge on Brier, \u2248 parity\" conclusion.\n\nBut the live bot does NOT price at 1.5\u00b0F. Day-ahead it uses `max(raw_std*2.04, 2.0F) + 0.7F*lead` (`weather.py:402-410`). I measured the live day-ahead **raw** ensemble std from 465 F-city + 1,101 C-city live signal reasoning strings in the DB: median raw std **2.10\u00b0F / 1.30\u00b0C**. Plugging into the live formula \u2192 live day-ahead effective sigma **median 4.98\u00b0F (F-cities), 3.04\u00b0C \u2248 5.5\u00b0F-equiv (C-cities)** \u2014 ~3.3\u00d7 wider than `sig*`.\n\nRe-scoring the identical records at the real live width:\n| set | market | model@sig*=1.5 | model@3.5 (harness \"conservative\") | **model@LIVE ~5.0\u00b0F** |\n|---|---|---|---|---|\n| ALL (n=3300) | 0.0506 | 0.0578 | 0.0666 | **0.0734** |\n| CONTESTED (n=725) | **0.1750** | 0.1746 | 0.2033 | **0.2218** |\n\nOptimism gap on the contested book = **0.1746 \u2192 0.2218 = +0.047 Brier (model 27% WORSE than market)**, entirely created by snooping sigma. The harness's own \"live floor+lead\" annotation of 2.7\u00b0F (`calibration_backfill.py:301`) is itself wrong: it assumes the 2.0F floor binds, but measured raw*2.04 \u2248 4.3F dominates the floor, so the comment understates the true live width by ~2\u00d7. *Secondary:* the records span Feb\u2013Jun (sample record is `2026-02-18`, winter) while the blend \u03c3-inflation 2.04 and bias were summer-tuned \u2014 mixing regimes further muddies the calibration read.\n\n**Fix:** report model Brier at the *actual* live pricing width, not a swept value. Quick version: drive `_records_at_sigma` with `max(raw*2.04,floor)+0.7*lead` using a representative raw std per city (quick-win). Proper version: reconstruct the day-ahead distribution from the live ensemble-api member spread, not a single deterministic value, so the harness prices what the bot prices (bigger-build).\n\n---\n\n**FINDING 2 \u2014 (b) Timezone leak in the market proxy makes Asian markets look artificially unbeatable. [blocker / quick-win]**\n\n`_fetch_market_price` takes the market YES price at `start + 6h` = **06:00 UTC** on the target date as a \"fair day-ahead, before the high plays out\" point (lines 336-358). I verified the local clock at 06:00 UTC per active city:\n\n| city | local time @ 06:00 UTC | relative to daily high |\n|---|---|---|\n| nyc / chicago / denver | 02:00 / 01:00 / 00:00 | pre-high (fair) |\n| paris | 08:00 | pre-high (fair) |\n| **tokyo** | **15:00** | **at/after the high \u2014 leaked** |\n| **hong_kong** | **14:00** | **at/after the high \u2014 leaked** |\n\nSo for Tokyo/HK the \"day-ahead\" market price already largely knows the outcome. Proof: I re-pulled the CLOB price for 112 Asian contested buckets at the harness's +6h-UTC snapshot vs a genuinely pre-high snapshot (prior-day 18:00 UTC = ~02-03h local):\n- market @ +6h UTC (harness, 14-15h local): **Brier 0.1661**\n- market @ prior-day 18:00 UTC (truly pre-high): **Brier 0.2852** (+72% worse)\n\nThe leak inflates the Asian market's apparent sharpness by ~42-72%. It also poisons the per-city verdicts (`run_market_compare` lines 398-409 declare \"market better\" for tokyo/hong_kong by the widest margins \u2014 0.165 vs 0.295/0.278 \u2014 precisely because the proxy is leaked). And the CONTESTED set is *selected* by this leaked price (`0.10 < mp < 0.90`), so the selection itself is biased for Asia.\n\n**Fix:** snapshot the market at a true pre-day, lead-aligned time \u2014 e.g. prior-day 18:00 UTC for all cities, or per-city `local_06:00` converted to UTC \u2014 so US and Asian cities are compared at the same forecast lead. Quick-win (one-line change to the target timestamp + window).\n\n---\n\n**FINDING 3 \u2014 (c) The reconstructed forecast center is short-lead/analysis-grade, not the lead-1 forecast the bot trades. [high / bigger-build]**\n\n`_hist_one` calls `historical-forecast-api` with no lead/init-time control (lines 137-142). Open-Meteo serves, per timestamp, the freshest-available run (initialized close to the target day = short lead), so the reconstructed center is more accurate than the genuine ~24h-lead forecast the bot makes at scan time. Two measurements (no network \u2014 from the records):\n- Harness center MAE vs realized winning-bucket midpoint: **ALL 2.53\u00b0F, but C-cities (Tokyo/Paris/HK) only 1.42\u00b0F-equiv** vs F-cities 3.60\u00b0F. A real 1-day-ahead high MAE is ~2.5-3.5\u00b0F; ~1.4\u00b0F is analysis-grade \u2014 the look-ahead is worst for exactly the C-cities that also have the Finding-2 leak.\n- The contested-optimal sigma is **1.35\u00b0F**, impossibly tight for a day-ahead temperature forecast (the live bot's raw day-ahead std alone is 2.1\u00b0F). A sigma that small only calibrates because the centers are more accurate than real-time centers \u2014 the look-ahead signature. This is the same root cause as Finding 1: an over-accurate center, then a sigma fit to it.\n\n**Fix:** reconstruct each event's center from the *ensemble-api* (or an explicitly lead-1 archived run), matching the lead the bot decides at; validate by checking the reconstructed center MAE lands at ~2.5-3.5\u00b0F, not ~1.4\u00b0F (bigger-build; needs lead-resolved archive access).\n\n---\n\n**FINDING 4 \u2014 (d) There is NO strategy P&L backtest anywhere; this harness cannot answer \"does it make money.\" [blocker / bigger-build]**\n\nConfirmed by full read: `calibration_backfill.py` only computes Brier/reliability/ECE (`brier`, `reliability`, `run_market_compare`). It never applies the 8% net-edge gate, the market-gap guardrail, Kelly sizing, the order-book VWAP fill walk, fees, the maker/taker routing, or settlement P&L. `intraday_backtest.py` only builds the \u03c3-shrink schedule from station obs. So \"does the strategy beat the price net of fees\" is currently answered only by the thin live scoreboard (44 settled, model Brier 0.379 vs market 0.287 per lead-auditor facts) \u2014 which already disagrees with the harness's rosy 0.175.\n\n**Fix \u2014 sketch of a proper event-driven P&L backtest:** for each resolved event, (1) reconstruct the point-in-time forecast distribution at *scan time* (lead-correct ensemble members \u2192 center + raw spread \u2192 the live `_effective_sigma`), (2) pull the *contemporaneous* CLOB order book at scan time (the leaked-proxy fix from Finding 2 is a prerequisite), (3) run the real `passes_threshold` gates (net-edge\u22658%, liquidity/volume/rel-spread/market-gap/entry-price), (4) size with `calculate_kelly_size` off a simulated bankroll, (5) fill via `walk_asks_for_cash` VWAP + fee, (6) settle on the known winner with `calculate_pnl`, (7) aggregate P&L, win-rate, drawdown, and P&L-vs-fees. Data available: resolved outcomes (Gamma), historical YES prices (CLOB prices-history). Data missing/hard: historical *full order-book depth* at scan time (prices-history gives only top/mid, so fills must be approximated) and a lead-resolved archived ensemble (needed for steps 1 & for Finding 3). Until this exists, calibration parity (even if real) does not imply profitability after the 8% gate and slippage.\n\n**tests_run**:\n\n- `PYTHONPATH=. timeout 600 venv/bin/python -m backend.data.calibration_backfill --market-sample 200` \u2192 334 events / 3502 buckets; sig*=1.50F; ALL market 0.0506 vs model@1.5 0.0578; CONTESTED market 0.1750 vs model@1.5 0.1746, model@3.5 0.2033; per-city contested: market beats model in all 6 cities (saved to `scratchpad/calib_run.log`).\n- `build_calib_records.py` \u2192 wrote `scratchpad/calib_records.json`: **3502 records, 334 events, 3300 with market_price**, keys `[city,metric,date,unit,low,high,won,center,corrected,market_price]` (deliverable for downstream agents).\n- DB reasoning parse (signals table) \u2192 live day-ahead raw ensemble std median **2.10\u00b0F (n=465) / 1.30\u00b0C (n=1101)**; `+/-` = `std_val` raw std (`weather_signals.py:421`), `[sigma]` tag only same-day; live day-ahead effective sigma = **median 4.98\u00b0F / 3.04\u00b0C** via `max(raw*2.04,floor)+0.7`.\n- Re-score at live width \u2192 ALL model 0.0734, CONTESTED model **0.2218** vs market 0.1750 (optimism gap +0.047 Brier / 27%).\n- Local-hour-at-06:00-UTC check (zoneinfo) \u2192 tokyo 15:00, hong_kong 14:00 (post-high); nyc/chicago/denver 00-02h (pre-high).\n- Asian re-snapshot (CLOB prices-history, 112 contested buckets) \u2192 market Brier **0.1661 @ +6h UTC** (leaked) vs **0.2852 @ prior-day 18:00 UTC** (pre-high).\n- Center-accuracy from records \u2192 harness center MAE **2.53\u00b0F ALL / 1.42\u00b0F C-cities / 3.60\u00b0F F-cities**; contested-optimal sigma **1.35\u00b0F** (vs live ~5.0\u00b0F).\n- Full read of both harness files \u2192 no edge gate / Kelly / fills / fees / settlement P&L anywhere (calibration-only).\n\nDeliverable saved: `/tmp/claude-0/-root-weather-trading-bot/e5147482-31bc-43d2-8473-75d507dd7139/scratchpad/calib_records.json` (3502 records, 334 events, 3300 priced). Builder: `/tmp/claude-0/-root-weather-trading-bot/e5147482-31bc-43d2-8473-75d507dd7139/scratchpad/build_calib_records.py`. Run log: `/tmp/claude-0/-root-weather-trading-bot/e5147482-31bc-43d2-8473-75d507dd7139/scratchpad/calib_run.log`.",
+ "wf2_recovered": [
+  {
+   "area": "Layer 2 \u2014 Data / Forecast Pipeline (backend/data/weather.py, station_bias_blend.json, sigma machinery, blend, timezone)",
+   "summary": "The model is overconfident and a worse forecaster than the market because its day-ahead probability distribution is 3-4x FLATTER than the market's, not too tight. Measured: the market resolves day-ahead temperature to an implied sigma of ~0.61C / ~1.70F (mean prob on the actual winning bucket 0.585 C / 0.444 F, from calib_records); the live blend prices day-ahead at an effective sigma of ~2.3-2.6C / ~5F (raw blend std ~1.3C x 2.04 inflation + 2F floor + 0.7/lead). A distribution flatter than the market's mechanically UNDER-prices the market's modal bucket (model says 13-27%, market 44-58% on the same bucket), so the bot perceives a fake +30-45% \"edge\" and bets NO against it. 42/44 settled trades (and 27/27 on the active book) are exactly this NO-on-the-market's-modal-bucket trade; stated side-confidence 0.80-0.815, realized win 0.48-0.55. This is the source of both the overconfidence gap and corr(edge,win)<0. The sigma machinery is doing its job HONESTLY \u2014 it correctly reflects that our forecast's RMSE vs the station (~2C, including grid-vs-point representativeness error) is ~3x the market's resolving power \u2014 which is the deeper diagnosis: we have NO day-ahead forecast edge over the market, and the current trade-selection monetizes that disadvantage. The blend itself is sound (C-city centers MAE 0.6-1.1; mixture_stats has no pricing double-count); bias is summer-window-fragile but currently in-regime; the live path is look-ahead-clean (the look-ahead lives only in the validation harnesses, meaning real skill is worse than the backtests claim). Profitability path: stop trading day-ahead off a flatter-than-market distribution (use the market as a Bayesian prior; only act where we are genuinely sharper \u2014 same-day, observed-floor anchored) and drive forecast RMSE down toward the market via MOS/station downscaling + seasonal bias.",
+   "findings": [
+    {
+     "title": "Day-ahead distribution is 3-4x flatter than the market -> manufactures the bleeding NO-on-modal trades (root cause of overconfidence)",
+     "severity": "blocker",
+     "gap": "The bot's day-ahead effective sigma (~2.3-2.6C / ~5F) is 3-4x the market's implied sigma (~0.61C / ~1.70F). A flatter distribution always under-prices the market's modal bucket, so the bot sees a fake +30-45% edge on it and bets NO. This is the mechanism behind 'stated 0.80 vs realized 0.55' (the 0.80 is NO-side confidence inflated by spreading mass thin) and corr(edge,win)<0.",
+     "evidence": "From calib_records.json: mean market prob on the ACTUAL winning bucket = 0.585 (C, single-degree) / 0.444 (F, 2-degree) -> market-implied sigma 0.61C / 1.70F. Inverting per-trade sigma from stored model_probability: median C-city effective sigma 2.33C. Live logs (signals.reasoning): id1 Tokyo low, center 19.1C sits INSIDE winning bucket '19C' yet model states 13% (market 58%), bets NO, LOSES. DB: 42/44 settled are NO bets (27/27 on the active book), stated side-confidence 0.796-0.815, realized win 0.545 (active 0.481), active pnl -$924. My YES-space Brier on 44 settled: model 0.319 vs market 0.247.",
+     "fix": "Treat the market price as a Bayesian prior on the bucket distribution and only emit a signal where the forecast is genuinely SHARPER than the market (gate: effective_sigma <= market-implied sigma, which day-ahead it never is) OR where corrected_mean excludes the market's modal bucket by > ~1.5 sigma. Concretely in weather_signals: blend P_final = w*P_model + (1-w)*market_price before the edge calc (small w day-ahead), and reject NO bets against the market's modal bucket. This eliminates the 42 fake NO-on-modal edges and confines trading to same-day observed-floor situations where we can actually be sharper. Expected: largest single calibration/P&L improvement (removes the entire current bleed).",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "Blend sigma-inflation 2.04 honestly encodes a ~2C forecast RMSE that is itself ~3x the market's resolving power (and is set ABOVE the GFS path, contradicting its own rationale)",
+     "severity": "high",
+     "gap": "WEATHER_BLEND_SIGMA_INFLATION=2.04 was fit so ensemble spread matches the forecast's RMSE-vs-station-obs (blend_validate ratio = mean(ens_std)/RMSE ~ 1/0.49). That RMSE (~2C) includes irreducible grid-cell-vs-point-station representativeness error the market does NOT carry (the market reads the actual station). So an honestly-calibrated forecast is structurally ~3x wider than the market and cannot beat it day-ahead. Separately, 2.04 > the GFS path's 1.3, directly contradicting the code comment that the blend is 'naturally better-dispersed, so it gets its own (lower) inflation factor.'",
+     "evidence": "backend/config.py:203 WEATHER_BLEND_SIGMA_INFLATION=2.04 vs :157 WEATHER_SIGMA_INFLATION=1.3; weather.py:405-407 comment says blend gets a LOWER factor. blend_validate.py:120-145 computes inflation from mean(ens_std)/RMSE(forecast-obs). Reasoning logs show raw blend std ~1.3C (192 pooled members) -> x2.04 = 2.65C effective vs market-implied 0.61C. calib best-calibrating sigma (in-sample, look-ahead center): 0.8C / 1.6F \u2014 also ~market, far below deployed.",
+     "fix": "Re-fit sigma per (city,metric,lead-day) from TRUE day-ahead forecast-vs-settlement residuals, and set the blend factor below 1.3 as the comment intends \u2014 but recognize the implication: even calibrated, our sigma (~2C) >> market 0.6C, so the honest conclusion is 'no day-ahead edge.' Use this to restrict trading to same-day. Lowering inflation alone shrinks the fake edges toward the market but does not create edge, so it is secondary to finding 1.",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "Station bias is a single frozen 60-day SUMMER window applied year-round; large residual continental warm bias out-of-season",
+     "severity": "medium",
+     "gap": "station_bias_blend.json is one 60-day fit (computed 2026-06-21, summer) with no auto-refresh. Bias is regime-dependent: in winter calib data the continental cities show large residual WARM center error even after correction (denver +5.2F mean, MAE 5.9F; chicago +2.5F, MAE 4.1F), which would put the model's confident mass on the wrong (too-warm) bucket. Live is currently summer so it is in-regime, but it is fragile and the CLAUDE.md's own note that GFS runs -2F on hot days cannot be captured by a static window.",
+     "evidence": "station_bias_blend.json: computed_at 2026-06-21, window_days 60. calib_records center-error decomposition (model center - winning-bucket midpoint), winter dates: denver signed +5.21 MAE 5.93; chicago +2.46 MAE 4.14; nyc +0.66 MAE 2.33; vs C-cities tokyo +0.09 MAE 0.60, paris +0.05 MAE 0.76, hong_kong +0.81 MAE 1.06. Magnitudes in the file are sane (largest active |bias| = HK high -1.64C); all 6 active cities are corrected under the blend.",
+     "fix": "Replace the frozen window with a rolling/seasonal re-fit (trailing ~30-45 days) on a scheduled job (reuse bias_backfill --blend), and key the bias to each market's actual settlement PROVIDER (Wunderground / HKO / NWS) rather than only Meteostat, to cut provider-mismatch noise that inflates RMSE. Expected: meaningfully lowers center error for continental cities across regimes.",
+     "effort": "bigger-build",
+     "confidence": "medium"
+    },
+    {
+     "title": "Validation harnesses contain look-ahead (analysis-grade center + post-high market proxy) -> real day-ahead skill is worse than the 'parity' claim; live path itself is clean",
+     "severity": "medium",
+     "gap": "The backtests that justify the deployed sigma and the 'parity with the market' belief use look-ahead inputs: the model center comes from historical-forecast-api (a short-lead ANALYSIS, far sharper than a true day-ahead ensemble run), and the market proxy is the 06:00-UTC price, which for Tokyo/Hong Kong is 14:00-15:00 local \u2014 AFTER the daily high has already formed, so the market 'knows' the answer. Both flatter the model and overstate market sharpness asymmetrically, so the deployed model's true day-ahead skill is worse than reported, consistent with the live deficit.",
+     "evidence": "blend_validate.py:36 HIST=historical-forecast-api; calibration center in calib_records is analysis-grade (best-calibrating sigma collapses to ~0.8-1.1, far below the true day-ahead 2.6C). 06:00 UTC = post-high for Tokyo/HK (tz Asia/Tokyo/Hong_Kong). Live path is look-ahead-clean: weather.py fetch_ensemble_forecast hits ensemble-api at request time; fetch_observed_extreme is time-gated (weather.py:885-896) and obs-only; bias is a static file.",
+     "fix": "Rebuild validation to snapshot a TRUE day-ahead forecast (lead=1 ensemble archived at decision time) and use a market price strictly BEFORE the local high forms (skip the 06:00-UTC proxy for Tokyo/HK, or use each city's pre-dawn local snapshot). Re-derive sigma and re-test the parity claim from that; expect the model to look worse, which correctly informs the 'confine to same-day' decision.",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "Adjudicating the hypotheses: blend, member-pooling, and active-city centers are NOT the cause \u2014 narrows the fix to the sigma/selection axis",
+     "severity": "low",
+     "gap": "To avoid chasing the wrong lever: (c) the equal-weight blend is not wrong \u2014 active C-city centers are excellent (tokyo/paris MAE 0.6-0.8C); (d) member-pooling does NOT double-count in pricing \u2014 _mixture_stats (mean of per-model means; law-of-total-variance std) feeds the priced mean/std, while the resampled _equal_weight_pool feeds only secondary agreement/fraction helpers; (e) station mismatch is a contributor to forecast RMSE (grid-vs-point) but not the dominant driver for active cities given their tight centers. The '192 members' in logs is cosmetic (3 models x k=64 resample), not the pricing n.",
+     "evidence": "weather.py:596-607 _mixture_stats used at fetch_ensemble_forecast (weather.py:732-733) for forecast.mean_high/std_high; _equal_weight_pool (weather.py:578-593) result only populates member_highs used by ensemble_agreement/_fraction_in_range (reference, not traded). calib center MAE per active C-city 0.60-1.06. Note: inflation IS applied on top of the mixture std which already includes between-model variance (weather.py:406-408) \u2014 a minor extra over-widening, not a double-count.",
+     "fix": "Keep the blend, mixture_stats, and member pooling as-is. Do not spend effort on the blend weighting or pooling. Direct all calibration effort at finding 1 (market-prior gating) and finding 2 (per-city/lead sigma re-fit); optionally relabel the cosmetic member-count log to the true pricing n to avoid future confusion.",
+     "effort": "quick-win",
+     "confidence": "high"
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "venv/bin/python analyze.py (center-error decomposition + sigma sweep on calib_records.json, 3502 buckets/334 events)",
+     "result": "Center error (model center - winning-bucket midpoint), winter regime: denver +5.21/MAE5.93, chicago +2.46/MAE4.14, nyc +0.66/MAE2.33, hong_kong +0.81/MAE1.06, paris +0.05/MAE0.76, tokyo +0.09/MAE0.60. Best-calibrating native sigma (look-ahead center): C 0.8, F 1.6 \u2014 far below deployed 2.6C/5F."
+    },
+    {
+     "command": "venv/bin/python -c 'market-implied sigma from winning-bucket prices'",
+     "result": "C-cities mean market prob on winning bucket 0.585 -> implied sigma 0.61C; F-cities 0.444 -> implied sigma 1.70F. Deployed effective ~2.3-2.6C / ~5F => 3-4x flatter than market."
+    },
+    {
+     "command": "venv/bin/python reprice.py (invert per-trade effective sigma; reprice 44 settled at calibrated sigma)",
+     "result": "Median inverted C-city effective sigma 2.33C (vs market 0.61C). YES-space Brier: model deployed 0.319 vs market 0.247. NO bets n=42, winrate 0.548, net -$237 on active subset."
+    },
+    {
+     "command": "sqlite3 tradingbot_copy.db (settled-trade direction/calibration split, all vs active)",
+     "result": "ALL: 42/44 NO bets, stated side-prob 0.796, winrate 0.545, pnl +$211 (propped by cut cities). ACTIVE: 27/27 NO bets, stated 0.815, winrate 0.481, pnl -$924. Confirms exclusive NO-on-market-modal pattern."
+    },
+    {
+     "command": "grep config.py + read station_bias_blend.json / blend_validate.py",
+     "result": "WEATHER_BLEND_SIGMA_INFLATION=2.04 > WEATHER_SIGMA_INFLATION=1.3 (contradicts 'blend better-dispersed' comment). Bias file: single 60-day window @2026-06-21 (summer); all 6 active cities corrected, sane magnitudes. Inflation fit = mean(ens_std)/RMSE_vs_obs in blend_validate (historical-forecast-api analysis center = look-ahead)."
+    }
+   ]
+  },
+  {
+   "area": "Layer 4 \u2014 Strategy & code correctness (sizing, settlement, gates, guardrail, parsers)",
+   "summary": "Read sizing.py, settlement.py, weather_signals.py, the scheduler gate, and config.py in full, and verified with executable scripts against the DB copy and calib records. The settlement/P&L/grading chain is correct end-to-end (the LINCHPIN is truly fixed for both YES and NO wins), and the documented edge-case risks (sub-zero buckets, open tails, rounding intervals, wrong-year date parser, .env override) are all already handled safely. The real problems are in the trade-decision and sizing layers, and they compound: (1) the market-gap guardrail's tolerance equals ~one full bucket width, so it cannot catch the single-bucket center disagreements that generate the bot's 27-78% edges; (2) Kelly sizes on the raw, +0.25-overconfident model probability and over-bets ~16x true Kelly, saved only by the 2.5% cap which turns it into a flat max bet on every \"confident\" call; and (3) there is no calibration step anywhere, so the 8% net-edge gate is actively anti-selective \u2014 higher-edge trades win LESS (0.45 vs 0.82). 9/9 relevant tests pass (one known-stale assertion). All findings are framed as gap+fix; profitability is achievable once the model probability is calibrated and the gate/guardrail/sizing stop amplifying the model's own miscalibration.",
+   "findings": [
+    {
+     "title": "Market-gap guardrail tolerance equals ~one bucket width, so it cannot catch the single-bucket disagreements that produce the bot's giant edges",
+     "severity": "blocker",
+     "gap": "The guardrail is sold as 'the big one' that vetoes events where our forecast disagrees with the market on the basic temperature. But WEATHER_MAX_MARKET_GAP_F=2.0 (config.py:235) against 2\u00b0F US buckets = exactly 1.00 bucket of allowed center disagreement, and the \u00b0C path (2.0/1.8=1.11\u00b0C vs 1\u00b0C buckets) allows 1.11 buckets (weather_signals.py:373-383). A center shifted by one full bucket flips a bucket's probability from ~90% to ~10-22% \u2014 i.e. it MANUFACTURES a 60-80% edge \u2014 while still passing the guardrail. The guardrail was calibrated to catch 3\u00b0+ gross station errors, but on 1-2\u00b0 buckets a sub-bucket disagreement is already a giant mispricing.",
+     "evidence": "Computed: US tolerance = 1.00 bucket, \u00b0C = 1.11 buckets. Numeric demo (\u03c3=0.7\u00b0C, bucket [25.5,26.5)): center 27.0\u00b0C is a +1.0\u00b0C gap that PASSES the 1.11\u00b0C guardrail yet gives model P=22% vs market ~90% (~68% edge). Real executed signal (signals table): 'Hong Kong low 26\u00b0C ... corrected 27.4C [sigma 0.7C] | Model YES: 10% vs Market: 88% | Edge: +77.6% ... [ACTIONABLE]'. Across placed trades 55/60 carried edge_at_entry>=0.20 (median 0.268) and settled win rate is 0.545 \u2014 the guardrail let essentially every giant-edge bet through.",
+     "fix": "Tighten WEATHER_MAX_MARKET_GAP_F to well under one bucket (\u22481.0\u00b0F / 0.5\u00b0C) so a one-bucket center disagreement is vetoed, AND replace/augment the scalar-mean check with a distribution-SHAPE check: compare our bucket-probability vector to the market's implied vector (L1 / KL divergence) and suppress when they diverge \u2014 a 78% single-bucket edge with agreeing means is the exact signature of us being wrong, not free money.",
+     "effort": "quick-win",
+     "confidence": "high"
+    },
+    {
+     "title": "Kelly sizes on the raw, overconfident model probability and over-bets ~16x true Kelly; the 2.5% cap is the only thing saving it, and the `edge` argument is dead code",
+     "severity": "high",
+     "gap": "calculate_kelly_size (sizing.py:37-79) computes the win-probability from `probability` = the raw clipped model_yes_prob (weather_signals.py:276-282, and identically in maker.py:233), which is systematically +0.25 overconfident. The full Kelly fraction is therefore huge (0.57 on an 80%/27% trade); fractional Kelly 0.05 \u2192 0.0287, then clamped to KELLY_MAX_TRADE_FRACTION=0.025. So 'confident' trades all pin to the 2.5% cap regardless of true edge, defeating Kelly's purpose. The `edge` parameter is passed (edge=net_edge) but never used by the formula, and the computed `confidence`/ensemble_agreement never feeds sizing either.",
+     "evidence": "Script: 80%-conf / 27%-edge trade \u2192 stake $250 (2.50% cap, binding); the SAME trade sized on the realized 0.545 win-rate \u2192 $16 \u2192 over-bet ratio 15.7x. Passing edge=999 returns the identical $250 (proves the arg is dead). In the DB, 13/60 placed trades sit at/above the $240 (=2.5% of $10k) cap; stated side-prob mean 0.815 vs realized win 0.545.",
+     "fix": "Calibrate model_yes_prob before sizing (shrink toward the market mid, or Platt/isotonic from the settled history) and size Kelly on that calibrated probability; lower KELLY_FRACTION until calibration is proven; remove the dead `edge` parameter (or make Kelly size on the calibrated net edge) so the signature stops implying edge-awareness it doesn't have.",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "No probability-calibration step exists, so the 8% net-edge gate is anti-selective \u2014 the trades the bot is most excited about win the least",
+     "severity": "high",
+     "gap": "Between the forecast and execution there is exactly one transform of model_yes_prob: a clip to [0.01,0.99] (weather_signals.py:223). passes_threshold (weather_signals.py:84-91) then gates purely on net_edge >= 0.08, computed from this uncalibrated prob. Because the model is overconfident, the buckets that clear an 8% net edge are disproportionately the ones where the model is MOST wrongly confident \u2014 the gate selects FOR miscalibration instead of against it. There is no shrinkage, no calibration map, and the gate never references the market's (well-calibrated) price as a sanity prior.",
+     "evidence": "Independently reproduced on 44 settled weather trades: corr(edge_at_entry, win) = -0.243, corr(edge, pnl) = -0.171; model side-Brier 0.319 vs market 0.247 (model worse); mean model side-prob 0.796 vs realized 0.545. Decisive: win rate for edge>=0.25 is 0.45 (n=33) vs 0.82 for edge<0.25 (n=11) \u2014 more 'edge' => worse outcome.",
+     "fix": "Insert a calibration layer (shrink model prob toward the market mid by a fitted weight, or isotonic/Platt-fit on settled outcomes) and gate on the CALIBRATED edge; require the calibrated edge to survive before any Kelly sizing. Until calibrated, treat large model-vs-market disagreements as a SELL signal on our own forecast, not a buy signal on the market.",
+     "effort": "bigger-build",
+     "confidence": "high"
+    },
+    {
+     "title": "Daily-loss circuit breaker is realized-loss-only and keyed to UTC settlement time, so it cannot stop a correlated pre-settlement pile-on",
+     "severity": "medium",
+     "gap": "The breaker (scheduler.py:144-155) sums Trade.pnl where settled==True and settlement_time >= today_start (UTC). Weather markets settle only at local day-end via the settlement job, and the bot now posts day-ahead (maker) and same-day (taker) trades. So the breaker sees zero loss until a batch of positions settles \u2014 it reacts a day late and never intraday. Multiple correlated buckets on the same city/day (all hinging on one forecast) can be opened and lose together before the breaker ever trips. The per-city/day cap (7%) is the only correlated-risk guard, and it is on OPEN stake, not on loss.",
+     "evidence": "Code read: filter is `Trade.settled == True` AND `settlement_time >= today_start` with today_start = datetime.utcnow() midnight. No unrealized/mark-to-market term. Settlement is local-day-end (settlement.py day_is_over logic), so realized loss lands in a burst well after entry.",
+     "fix": "Add an unrealized-loss component (mark open positions to live book via the existing _current_side_prices) to the daily-loss check, and/or trip the breaker on a rolling settled-loss window rather than the UTC calendar day so an overnight settlement batch can't straddle the reset.",
+     "effort": "quick-win",
+     "confidence": "medium"
+    },
+    {
+     "title": "Settlement, P&L, the LINCHPIN fix, and all flagged edge-case parsers are verified correct \u2014 documented risks (wrong-year parser, sub-zero buckets) are stale",
+     "severity": "low",
+     "gap": "The audit needs the trade-accounting and parsing layer confirmed sound so remaining effort focuses on the real (calibration/sizing) gaps. The CLAUDE.md 'Known issues' list still flags a wrong-year date parser and historically flagged sub-zero/yes-no bugs; these needed independent re-verification, not assumption.",
+     "evidence": "grade_signal_outcome + calculate_pnl traced end-to-end (settlement.py:146-211): held-YES/YES-won \u2192 correct, pnl +$88.68 (=size*(1-p)/p); held-YES/NO-won \u2192 -$100; held-NO/NO-won \u2192 +$88.68; held-NO/YES-won \u2192 -$100 \u2014 yes/no vs up/down maps cleanly, NO trades store the NO-side price so payout is right. parse_bucket_label (weather_markets.py:120-168): '-2\u00b0C or below'\u2192(None,-2), '-5 - -3\u00b0C'\u2192(-5,-3), '\u22122\u00b0C'(unicode minus)\u2192(-2,-2), open tails and lo>hi rejection all correct. parse_event_slug REQUIRES \\d{4} year (regex line 55) and returns None when the year is absent \u2014 the 'assumes current year' risk does not exist in the current slug-based parser. Tests: 8 suites pass (settlement_grading, pnl, forecast_distribution, weather_signal_costs, orderbook, bias_correction, celsius_markets); test_weather_markets.py has only the known-stale 'Tokyo untracked' assertion.",
+     "fix": "No code change needed; update the stale CLAUDE.md 'Known issues' entries (wrong-year parser; sub-zero/yes-no) to 'verified fixed' so they stop drawing audit attention away from the calibration/sizing gaps above.",
+     "effort": "quick-win",
+     "confidence": "high"
+    }
+   ],
+   "tests_run": [
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_settlement_grading.py",
+     "result": "PASS (8 grading cases + regression)"
+    },
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_pnl.py",
+     "result": "PASS"
+    },
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_forecast_distribution.py",
+     "result": "PASS"
+    },
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_weather_signal_costs.py",
+     "result": "PASS"
+    },
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_orderbook.py",
+     "result": "PASS"
+    },
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_bias_correction.py",
+     "result": "PASS"
+    },
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_celsius_markets.py",
+     "result": "PASS"
+    },
+    {
+     "command": "PYTHONPATH=. venv/bin/python tests/test_weather_markets.py",
+     "result": "1 assertion fails \u2014 known-stale 'Tokyo untracked' (Tokyo is now an active city); not a real bug"
+    },
+    {
+     "command": "venv/bin/python kelly_settle.py (constructed Kelly + settlement cases)",
+     "result": "80%/27% trade \u2192 $250 (2.5% cap); true-0.545 sizing \u2192 $16 (15.7x over-bet); edge arg proven dead; all 4 settlement directions grade + pay correctly"
+    },
+    {
+     "command": "sqlite3 DB-copy: corr/Brier on 44 settled weather trades",
+     "result": "corr(edge,win)=-0.243, corr(edge,pnl)=-0.171; model side-Brier 0.319 vs market 0.247; win edge>=0.25:0.45 vs edge<0.25:0.82"
+    }
+   ]
+  }
+ ],
+ "verdicts": [
+  {
+   "claim": "The bot's edge signal is ANTI-predictive: larger model-vs-market edge_at_entry predicts FEWER wins and more loss (corr(edge,win) ~= -0.24). edge_at_entry is the NET edge that drives both trade selection and Kelly bet size (backend/core/weather_signals.py:277 edge=net_edge; backend/core/scheduler.py:234; sized up via win_prob in backend/core/sizing.py:37-70).",
+   "verdict": "holds-with-caveats",
+   "strongest_counter_evidence": "The negative correlation is NOT statistically significant at n=44, so a true-zero (\"no signal, too few trades\") cannot be excluded. Bootstrap 95% CI on corr(edge,win) = [-0.462, +0.050] crosses zero; two-sided permutation p=0.114 (Pearson) and p=0.761 for the cleaner median-split win-rate difference. The point estimate also shrinks most when Tokyo (the worst loser, n=10) is dropped: corr(edge,win) -0.243 -> -0.155, corr(edge,pnl) -0.171 -> -0.056 \u2014 i.e. Tokyo contributes a disproportionate share of the effect, though it never flips the sign. So the precise figure \"-0.24\" should NOT be sold as a significant effect; honest phrasing is \"no positive selectivity, robustly negative-leaning, underpowered.\"",
+   "robustness_checks": "Reproduced on tradingbot_copy.db, 44 settled trades w/ edge (24W/20L, winrate 0.545). (1) Point est: Pearson corr(edge,win)=-0.243 (matches claim), Spearman=-0.205, corr(edge,pnl)=-0.171. (2) Leave-one-city-out (9 cities): corr(edge,win) NEGATIVE in ALL 9 cuts, range [-0.155 drop-tokyo, -0.319 drop-miami]; corr(edge,pnl) negative in all 9 [-0.056..-0.256]. Refutation attempt (one-city artifact) FAILS: dropping Tokyo weakens but does not flip; dropping Miami STRENGTHENS it. (3) Active-only (n=27, nyc/chi/den/tok/par/hk): corr(edge,win)=-0.220, corr(edge,pnl)=-0.207 \u2014 holds on both active and all-cities. (4) Bootstrap 10k: corr(edge,win) P(negative)=0.952, CI=[-0.462,+0.050]; corr(edge,pnl) P(neg)=0.883, CI=[-0.408,+0.139]. (5) Interpretable cut: edge tertiles give MONOTONE-DECREASING win rate 0.714 -> 0.467 -> 0.467 and mean P&L +25.1 -> +12.0 -> -21.3; median-split high-edge half winrate 0.500 vs low-edge 0.591 (high-minus-low -0.091, wrong sign). (6) Mechanism confirmed: corr(edge, bet size)=+0.114 (bot does stake more on bigger edge), and the model overconfidence gap WIDENS with edge (stated conviction minus realized winrate: +0.223 low-edge vs +0.297 high-edge) \u2014 the biggest edges are the biggest mirages, consistent with the audit's overconfidence finding.",
+   "confidence": "medium",
+   "caveats": "n=44 is underpowered; the 95% CI just crosses zero so the magnitude is not significant \u2014 the durable, load-bearing finding is the ABSENCE of positive selectivity (bootstrap upper bound on a positive correlation is only ~+0.05), not a precise -0.24. Pearson with a binary outcome (point-biserial) is sensitive to the heavy/skewed edge tail; Spearman (-0.205) and the tertile win-rates agree, mitigating but not eliminating this. City inference is parsed from event_slug. Result/pnl are as-settled in the DB copy (no re-grading). GAP + FIX: the decision variable that scales Kelly bet size up (edge = model_side_prob - market_price) has, historically, zero-to-negative predictive value \u2014 the most 'selective' high-edge trades did WORSE (T3 winrate 0.467, mean P&L -21.3) and are where the model is most overconfident (+0.297 gap). Until the model is recalibrated, raw edge magnitude is not a protective gate and Kelly-on-edge is mis-sizing toward the mirages. Fixes: (a) flatten/cap sizing vs edge or invert the convexity (do not bet bigger on bigger disagreement with the market) pending recalibration; (b) tighten the market-gap guardrail and apply a shrinkage/probability-calibration layer (e.g. blend model prob toward market price) so stated conviction matches the realized 0.545 winrate; (c) judge on Brier per the run plan, not P&L, and require demonstrated POSITIVE edge-vs-win correlation on a larger sample before trusting edge to size."
+  },
+  {
+   "claim": "The model is grossly overconfident (mean stated side-prob ~0.80 vs realized win ~0.545, +0.25 gap) while the market is calibrated (~0.53 vs 0.545).",
+   "verdict": "holds",
+   "strongest_counter_evidence": "Two genuine counter-points, neither of which overturns the claim. (1) The calib_records `center` is analysis-grade / short-lead (look-ahead-flattered) per the lead auditor, so it is a BETTER center than the live forecast. But this makes the finding CONSERVATIVE, not invalid: pricing this flattered center at the live 5.0F width STILL yields NO-bet side-prob 0.844 vs realized 0.545 (gap +0.299, cluster-bootstrap-by-event 95% CI [+0.265,+0.335]); the live bot with a worse center is necessarily >= this overconfident. (2) The model is NOT uniformly broken \u2014 at a snooped best-fit sigma (~1.5F, the calibration_backfill width) it reaches near-parity Brier, and its high-confidence open-tail buckets (0.9-1.0 YES bin: pred 0.983, realized 1.000) are well-calibrated. The miscalibration is concentrated in the 0.2-0.5 YES region (mid-confidence buckets near its forecast center: predicts 24.5/34.2/43.6%, realizes 1.9/3.1/29.2%). So \"grossly overconfident\" is precisely true for the traded region and the cause is identifiable (mass too concentrated around a slightly-off center at the deployed 5.0F width) \u2014 which is why it is fixable, not evidence against the claim.",
+   "robustness_checks": "Reproduced live-DB metric exactly (n=44: model side-prob 0.796 vs win 0.545 = +0.250; market 0.512 vs 0.545 = -0.034; model Brier 0.319 vs market 0.247 side-space). Bootstrap on live 44 (10k resamples): gap point +0.250, 95% CI [+0.102,+0.400], frac<=0 = 0.0006 -> not a small-sample fluke. Independent 3502-bucket calib set at live width (sigma=5.0F, 2.78C, replicating _fitted_bucket_prob backend/data/weather.py:426-450): full-set reliability table shows model overconfident in 0.2-0.5 YES bins, market calibrated in every bin (MODEL Brier 0.069 vs MARKET 0.051 YES-space). Simulated bot bet-selection (8% edge gate + market-gap guardrail) on calib set: 939 bets, MODEL side-prob 0.452 vs realized 0.252 (+0.200), MARKET 0.250 vs 0.252 (-0.002) on identical buckets; NO bets 0.844 vs 0.545 (+0.299). Width sensitivity 4/5/6F: gap +0.190/+0.200/+0.210 (robust, not knife-edge). Per-city (all 6 active): chicago +0.179, denver +0.182, hong_kong +0.279, nyc +0.130, paris +0.173, tokyo +0.257 -> NOT one city. Excluding 06:00-UTC market-proxy leakage cities (tokyo+hong_kong): gap still +0.164. Sanity: model mean pred YES 0.0954 == realized base-rate 0.0954 (distribution integrates correctly), market 0.104 vs 0.101.",
+   "confidence": "high",
+   "caveats": "The overconfidence is concentrated in the model's mid-confidence / traded region (YES prob 0.2-0.5, i.e. NO-side prob 0.5-0.85), not uniform across all buckets; far-tail high-confidence buckets are calibrated. The market-side calibration in the calib set could be marginally flattered by the 06:00-UTC proxy for Tokyo/HK, but the live-DB market calibration (0.512 vs 0.545) uses the real entry price with no proxy and confirms the market is calibrated, and the MODEL-vs-realized gap is measured against outcomes alone (market-independent), so leakage cannot manufacture it. Gap+fix framing: the deployed day-ahead width (max(raw*2.04,2.0)+0.7/lead ~= 5.0F, backend/config.py:157-159,203) is too narrow for the center error it sits on -> recalibrate by widening toward the realized dispersion / market-implied width, or shrink the model side-prob toward the market price (Platt/isotonic from this exact reliability curve) before the edge gate and Kelly sizing. Until then edge_at_entry is anti-predictive and the model loses to a calibrated market."
+  },
+  {
+   "claim": "No honest slice (city/metric/lead) shows the model beating the market on Brier after costs with adequate sample; the apparent winners (HK n=6, London n=3) are small-sample variance.",
+   "verdict": "holds-with-caveats",
+   "strongest_counter_evidence": "CHICAGO is a genuine, OOS-robust slice where the model's FORECAST beats the market on Brier \u2014 refuting the broad reading \"no honest slice anywhere,\" though the live bot throws the edge away via over-wide width. From calib_records.json (contested market in [0.05,0.95], n=211 buckets/54 events, event-clustered bootstrap): at a narrow honest width ~1.5F, chicago model_Brier=0.119 vs market 0.146, market-model=+0.026, 95% CI [+0.0047,+0.0464] EXCLUDES 0. Robust across bands ([0.1,0.9]: +0.037 CI[+0.010,+0.063]; [0.02,0.98]: +0.021 CI[+0.005,+0.037]) and across 3 out-of-sample time splits (train-best width on earlier dates applied to held-out later dates: +0.025/+0.033/+0.043, train-best width consistently 1.25F). Chicago beats the market for ALL widths <= 3.25F. Inland/EU block (chicago+nyc+denver+paris, no Asia leak) at 1.5F TIES the market: market-model=+0.011 CI[-0.0004,+0.0218]. The inland forecast CENTER has real skill; the live-width deficit is a width/calibration defect, not absence of edge.",
+   "robustness_checks": "(1) LIVE-WIDTH scoring (5.0F; 5.0/1.8=2.78C), the width the bot actually prices day-ahead \u2014 claim HOLDS hard: whole active set model_Brier=0.191 vs market 0.148, market-model=-0.043, event-bootstrap CI[-0.056,-0.030]. EVERY active city model-worse or tie-centered-negative: chicago -0.017 CI[-0.037,+0.002], nyc -0.016 CI[-0.037,+0.004], denver -0.023 CI[-0.045,+0.000], paris -0.036 CI[-0.057,-0.016], hong_kong -0.117 CI[-0.205,-0.038], tokyo -0.156 CI[-0.213,-0.098]. NO slice has CI>0 at the live width. (2) WIDTH SWEEP 1.5->6.0F on whole set: model only reaches parity at the in-sample-overfit 1.5F (-0.007 CI[-0.021,+0.005]); monotonically worse as width widens to the live 5.0F. Confirms the over-wide live sigma (inflation 2.04) is THE defect. (3) HK/Tokyo \"winners\" REFUTED as skill: at live width they are the WORST forecasting slices (HK calib 0.259 vs 0.142; tokyo 0.287 vs 0.132). Live DB (tradingbot_copy.db, 44 settled): HK +$626/83%-win sits on model_Brier 0.553 vs market 0.252 (n=6) \u2014 pure variance; active-total model 0.333 vs market 0.260. (4) ASIA 06:00-UTC LEAK quantified and direction confirmed: 06:00 UTC = 14-15h local (post-high); Asia high market is 80% at rails, Brier 0.033-0.041 vs 0.056 inland -> leak INFLATES MARKET skill, making the model's Asia deficit look WORSE than a fair day-ahead price; correcting it shrinks but cannot flip a -0.10..-0.16 gap. (5) The one survivor (chicago narrow-width) checked across 3 contested bands + 3 OOS time splits (above) \u2014 robust. (6) metric split at 5.0F: high -0.043 CI[-0.056,-0.030], low -0.049 CI[-0.142,+0.031] (low n=36 too small).",
+   "confidence": "high",
+   "caveats": "GAP + FIX framing: The claim holds for the model AS DEPLOYED (live ~5.0F day-ahead width = max(raw*2.04,2.0)+0.7*lead): zero honest slice beats the market, and HK/London apparent P&L wins are variance + the Asia market-proxy leak. BUT the model's forecast CENTER is good inland \u2014 chicago's center beats the market's implied probabilities with CI>0 OOS, and inland/EU ties \u2014 so the deficit is a WIDTH/calibration over-correction, not missing skill. FIX: replace the single global sigma_inflation (2.04 -> ~5.0F) with per-city day-ahead width calibration; chicago's optimal is ~1.25-2F and it stays a winner up to 3.25F. Two important limits on the caveat: (a) \"after costs\" is NOT demonstrated \u2014 Brier excludes the 8% net-edge gate + spread, chicago's +0.026 Brier edge is modest, and NO strategy P&L backtest exists anywhere, so even chicago is unproven profitable after costs; (b) the fix does NOT rescue Asia \u2014 Tokyo/HK have genuinely bad centers (coastal, Tokyo un-bias-corrected) and lose at every width, so they should be cut, not re-widened. Net: the literal claim holds; the deeper claim \"the model has no edge anywhere\" is refuted by chicago/inland, which is the realistic path to profitability."
+  }
+ ]
+}
