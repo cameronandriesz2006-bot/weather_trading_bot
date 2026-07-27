@@ -147,6 +147,19 @@ optional arb scanner · 9 gated go-live.
   (`station_bias.json`, Meteostat station obs).
 - **Costs** — enter at the real ask/VWAP; gate+size on net edge (gross − spread/2 − fee); `fee`
   column; `calculate_pnl` pays net odds on win, full stake on loss.
+- **Polymarket DOES charge a weather taker fee** (found 2026-07-26, commit ce6aa76 — the old
+  `WEATHER_FEE_RATE = 0.0` was wrong and fed the live path AND every Edge-2 backtest). Verified
+  on all 1,639 daily-temperature markets: `feeType: "weather_fees"`,
+  `{"exponent":1,"rate":0.05,"rebateRate":0.25,"takerOnly":true}` ⇒ `fee = shares·0.05·p·(1−p)`,
+  **takers only** — makers pay nothing and earn a 25% rebate. Now `WEATHER_TAKER_FEE_RATE`; always
+  price it via `sizing.taker_fee_per_share` (price units, for gating/sizing) or
+  `taker_fee_on_cash` (dollars, for booking), never a flat rate — a flat fraction cannot express
+  the shape. As a fraction of notional the cost is `0.05·(1−p)`: ~0.5% on a 90c favourite but
+  ~4.5% on a 10c tail, i.e. **worst exactly where a tail-buying strategy lives**. Re-pricing the
+  real log: all-time 120 trades −$213.75 → **−$449.16** (the broad pre-Edge-2 tail-buying
+  strategy's loss roughly DOUBLES); the 49-trade Edge-2 cohort −$286.61 → −$316.35 (favourites,
+  so only 10% worse — that verdict is unchanged). The `edge2_publish_honest` Ha=16 seam still
+  survives with fees on (99→92 tradeable, P&L $19,025→$18,983).
 - **Liquidity/slippage** — min liquidity + max relative-spread gates; size capped to a book
   fraction; candidates walk the real CLOB book for exact VWAP (`backend/data/orderbook.py`).
 - **Sizing is bankroll-relative** — `KELLY_FRACTION` 0.20, `KELLY_MAX_TRADE_FRACTION` 0.05,
