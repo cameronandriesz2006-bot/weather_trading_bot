@@ -462,6 +462,47 @@ def evaluate_event(legs: List[dict], books: Dict[str, LiveBook],
     return out
 
 
+# --------------------------------------------------------------------------- shadow probe
+async def shadow_probe(client, events_by_slug: Dict[str, dict], hits: List[dict],
+                       log_fh) -> List[dict]:
+    """Fill-realism probe (built per AUDIT_2026-07-27_arb_pnl_VERDICT.md, step 2).
+
+    A hit's prices are already ~1s old when it is scored — ``ts`` is stamped after the
+    full-universe fetch — which is about when a real order could first reach the book. So the
+    moment a sweep finds hits, re-fetch JUST those boards' books (one small POST, ~22 tokens
+    per board), re-score them with the same optimiser, and log original vs still-there profit
+    as a ``shadow`` row. ``now`` = 0 means nothing net-positive remained: taken or cancelled,
+    either way not ours. This is the number the go/no-go reads — measured fill survival
+    instead of the assumption that we trade every price the scanner photographs.
+    Summarise with ``negrisk_shadow_report.py``.
+    """
+    tokens = []
+    for h in hits:
+        for leg in events_by_slug[h["slug"]]["legs"]:
+            tokens += [leg["yes"], leg["no"]]
+    books = await fetch_books(tokens, client)
+    now = datetime.now(timezone.utc)
+    out = []
+    for h in hits:
+        ev = events_by_slug[h["slug"]]
+        res = evaluate_event(ev["legs"], books, ev.get("sanity")) or {}
+        row = {"type": "shadow", "ts": now.isoformat(), "slug": h["slug"],
+               "delay_s": round((now - datetime.fromisoformat(h["ts"])).total_seconds(), 3)}
+        for side in ("buy", "short"):
+            if side not in h:
+                continue
+            cur = res.get(side)
+            row[side] = {"orig": h[side]["profit"], "k_orig": h[side]["k"],
+                         "now": cur["profit"] if cur else 0.0,
+                         "k_now": cur["k"] if cur else 0.0}
+        out.append(row)
+        if log_fh:
+            log_fh.write(json.dumps(row) + "\n")
+    if log_fh and out:
+        log_fh.flush()
+    return out
+
+
 # --------------------------------------------------------------------------- sweep
 async def load_tokens(client, tag: str, max_events: int, refresh: bool) -> List[dict]:
     cache = {}
@@ -533,8 +574,14 @@ async def sweep(client, events: List[dict], log_fh) -> dict:
                                  "illusion": round(illusion, 3),
                                  "fetch_s": round(fetch_s, 3)}) + "\n")
         log_fh.flush()
+    shadows = []
+    if hits:
+        try:
+            shadows = await shadow_probe(client, {e["slug"]: e for e in events}, hits, log_fh)
+        except Exception:
+            pass        # the probe is measurement, never a reason to lose a sweep
     return {"ts": ts, "events": len(events), "quoted": quoted, "hits": hits,
-            "tokens": len(tokens), "fetch_s": fetch_s}
+            "tokens": len(tokens), "fetch_s": fetch_s, "shadows": shadows}
 
 
 def print_sweep(r: dict, top: int):
@@ -562,6 +609,11 @@ def print_sweep(r: dict, top: int):
     tot = sum(max(h.get("buy", {}).get("profit", 0), h.get("short", {}).get("profit", 0))
               for h in ex)
     print(f"  EXECUTABLE PROFIT THIS SWEEP: ${tot:.2f}")
+    sh = r.get("shadows") or []
+    if sh:
+        orig = sum(x[s]["orig"] for x in sh for s in ("buy", "short") if s in x)
+        still = sum(x[s]["now"] for x in sh for s in ("buy", "short") if s in x)
+        print(f"  SHADOW ({sh[0]['delay_s']:.1f}s later): ${still:.2f} of ${orig:.2f} still takeable")
 
 
 async def main():

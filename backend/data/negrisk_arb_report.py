@@ -44,6 +44,8 @@ def load(path, executable_only=True, direction=None):
             if r.get("type") == "sweep":
                 sweeps.append(r["ts"])
                 continue
+            if r.get("type") not in (None, "board"):
+                continue        # e.g. shadow-probe rows; None = pre-type-tag boards
             best, bdir = 0.0, None
             for d in ("buy", "short"):
                 if direction and d != direction:

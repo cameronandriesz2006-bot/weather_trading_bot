@@ -10,12 +10,12 @@ Two strategies have been tried on Polymarket. **One is dead, one is open.**
 | | status |
 |---|---|
 | **Weather forecasting bot** (Edge-2) | **FAILED** its go/no-go 2026-07-26 at n=49, −$287. Taker leg off; the service still runs in shadow mode (prices + settles, opens nothing). Everything about it is in `archive/weather-bot/` — **you almost certainly do not need to read it.** |
-| **negRisk arb** | **OPEN — awaiting audit.** A P&L replay of 15.4h of live scanning says $106/day headline, but one 2-second trade is 60% of it and fill realism is untested. `ARB_PNL_2026-07-27.md`. |
+| **negRisk arb** | **AUDITED 2026-07-27 — headline rejected, grind unproven.** The $106/day replay was arithmetically honest but zero-latency; survival-credited + gas it is $47/day, of which the recurring ex-tail grind is ~$7–11/day *before* unpriced legging risk, on ~$1–2.5k locked. Verdict + go/no-go: `AUDIT_2026-07-27_arb_pnl_VERDICT.md`. Scanner keeps running to grow the sample; the shadow-fill probe is **LIVE in the scanner since 07-27 08:06Z** (`shadow` rows; read with `negrisk_shadow_report.py`). |
 
-**If you are the audit session: read `ARB_PNL_2026-07-27.md` first.** It has the method, the
-numbers, and a ranked list of where to attack them. Then
-`AUDIT_2026-07-26_negrisk_arb_VERDICT.md` for what was already verified and should not be
-re-litigated (token mapping, partition structure, snapshot coherence, the fee itself).
+**Read `AUDIT_2026-07-27_arb_pnl_VERDICT.md` first** — it supersedes the framing of
+`ARB_PNL_2026-07-27.md` (whose accounting it confirmed and whose crediting it rejected).
+`AUDIT_2026-07-26_negrisk_arb_VERDICT.md` still holds for what must not be re-litigated
+(token mapping, partition structure, snapshot coherence, the fee itself).
 
 ## The arb, in plain terms
 
@@ -66,9 +66,13 @@ final. Its code and DB are in `archive/weather-bot/`. Do not restart it.
 Arb (current):
 
 - `backend/data/negrisk_arb_scan.py` — the scanner: board enumeration, `board_sanity`, depth-honest
-  net-of-fee optimiser (`best_subset_net` / `best_set_size_net`), sweep loop.
+  net-of-fee optimiser (`best_subset_net` / `best_set_size_net`), sweep loop, and `shadow_probe`
+  (re-fetches every hit board ~1s after scoring, logs `shadow` rows = measured fill survival).
 - `backend/data/negrisk_arb_pnl.py` — replays the log as executions; `--until` pins a window for
-  reproducibility, `--episode-gap` / `--gas` expose the judgment calls.
+  reproducibility, `--episode-gap` / `--gas` / `--credit-row` expose the judgment calls
+  (default crediting is the audited row-2-survival, not arrival).
+- `backend/data/negrisk_shadow_report.py` — shadow-probe survival report (per-probe and
+  per-episode); the input to the go/no-go (first read 2026-07-28).
 - `backend/data/negrisk_arb_report.py` — window/opportunity reporting.
 - `backend/data/orderbook.py` — live CLOB book fetch + VWAP fill walk.
 - `backend/core/sizing.py` — `taker_fee_per_share` / `taker_fee_on_cash` (canonical fee math),
