@@ -21,6 +21,12 @@ taker fee that was later discovered to be missing, the all-time record is **−$
 
 | path | what |
 |---|---|
+| `backend/` | The bot's runtime code — FastAPI app (`api/`), scheduler / settlement / signals / maker / execution (`core/`), Kalshi client (never used), SQLAlchemy models |
+| `frontend/` | The React dashboard |
+| `tests/` | The 11-file suite (all of it except `test_orderbook.py`, which stayed — it covers arb-critical code) |
+| `run.py`, `main.py` | Entrypoints for `weatherbot.service` |
+| `Procfile`, `railway.json`, `vercel.json` | Deploy configs for the dashboard |
+| `tradingbot.db` | **The trade record: 123 trades, all settled, −$477.85.** Untracked (gitignored), server-local. |
 | `research/` | 17 backtest / calibration / diagnostic harnesses (Edge-2 backtests, bias & σ refits, day-ahead liquidity studies, fillability report) |
 | `research/edge1-freemoney/` | The **Edge-1** "locked-out bucket" scanner and its deps. A *different, also rejected* arb — measured at ~$15-30/mo at realistic latency. Named `arb_scan.py`; do not confuse it with the live negRisk work in `backend/data/negrisk_arb_*.py`. |
 | `docs/` | The 06-29 audit, the original build plan, and the stale README / ARCHITECTURE / RESEARCH docs (last touched 2026-06-15) |
@@ -39,17 +45,19 @@ Nothing live imports any of them — verified by import-closure analysis before 
 
 ## What did NOT move, and why
 
-`weatherbot.service` is **still running** on this machine in shadow mode (prices and settles, opens
-no positions). Its code therefore stays in place: `backend/api/`, `backend/core/`,
-`backend/data/weather.py`, `backend/data/weather_markets.py`, `backend/data/orderbook.py`,
-`backend/data/kalshi_*.py`, `run.py`, `main.py`, `frontend/`, `tests/`, `tradingbot.db`.
+`weatherbot.service` was **stopped and disabled** on 2026-07-27 with all 123 trades settled and
+zero open positions, which is what allowed the runtime code above to be archived.
 
-Two of those files are also load-bearing for the arb scanner: **`orderbook.py`** (book fetch +
-VWAP walk) and **`weather_markets.py`** (`parse_bucket_label`). They are not archivable at all.
+Four files stayed at the top level because **the arb scanner needs them**:
 
-All 123 trades are settled and there are **zero open positions**, so nothing is waiting on the
-service — it can be stopped whenever you want, and archiving the rest of the tree becomes trivial
-once it is.
+| file | why it can never be archived |
+|---|---|
+| `backend/data/orderbook.py` | live CLOB book fetch + VWAP fill walk — the arb's core I/O |
+| `backend/data/weather_markets.py` | `parse_bucket_label`, imported directly by `negrisk_arb_scan.py` |
+| `backend/data/weather.py` | `weather_markets.py` lazily imports `CITY_CONFIG` / `station_local_now` from it (line ~364). Its `station_bias*.json` neighbours stay too — it loads them by `Path(__file__).with_name()`. |
+| `backend/core/sizing.py` | the canonical `taker_fee_per_share` / `taker_fee_on_cash` fee math, plus `calculate_edge` / `calculate_kelly_size` which CLAUDE.md protects |
+
+`tests/test_orderbook.py` also stayed, since it covers `walk_asks_for_cash`.
 
 ## The one finding that outlived the strategy
 

@@ -45,9 +45,11 @@ depth. All loss risk is in execution: a partial fill on an 11-leg set can pay **
 
 | service | what | notes |
 |---|---|---|
-| `negrisk-arb.service` | sweeps all ~135 boards every 2s, `--loop 2 --quiet` | 0 restarts since 2026-07-26 13:41; writes `logs/negrisk_arb.jsonl` |
-| `weatherbot.service` | the failed bot, shadow mode, port 8000 | **0 open positions** (all 123 trades settled) — nothing depends on it staying up |
+| `negrisk-arb.service` | sweeps all ~135 boards every 2s, `--loop 2 --quiet` | **the only trading process left.** 0 restarts since 2026-07-26 13:41; writes `logs/negrisk_arb.jsonl` |
 | `claude-remote.service` | phone access to Claude Code in this repo | |
+
+`weatherbot.service` was **stopped and disabled 2026-07-27** — 123 trades, all settled, −$477.85
+final. Its code and DB are in `archive/weather-bot/`. Do not restart it.
 
 ## Hard constraints (do not violate)
 
@@ -68,12 +70,15 @@ Arb (current):
 - `backend/data/negrisk_arb_pnl.py` — replays the log as executions; `--until` pins a window for
   reproducibility, `--episode-gap` / `--gas` expose the judgment calls.
 - `backend/data/negrisk_arb_report.py` — window/opportunity reporting.
-- `backend/data/orderbook.py` — live CLOB book fetch + VWAP fill walk. **Shared with the weather
-  bot; not archivable.**
+- `backend/data/orderbook.py` — live CLOB book fetch + VWAP fill walk.
+- `backend/core/sizing.py` — `taker_fee_per_share` / `taker_fee_on_cash` (canonical fee math),
+  `calculate_edge` / `calculate_kelly_size`.
 
-Weather bot (shadow mode — `backend/api/main.py`, `backend/core/*`, `backend/data/weather*.py`,
-`backend/data/kalshi_*.py`, `backend/models/database.py`, `run.py`, `frontend/`, `tests/`). Left
-in place only because the service is still up. See `archive/weather-bot/README.md`.
+Four files survive from the weather bot **because the arb needs them** and are not archivable:
+`orderbook.py`, `weather_markets.py` (`parse_bucket_label`), `weather.py` (lazily imported by
+`weather_markets.py`, and it loads its `station_bias*.json` neighbours by path), and `sizing.py`.
+Everything else — the FastAPI app, scheduler, settlement, signals, dashboard, test suite, trade
+DB — is in `archive/weather-bot/`. See its README.
 
 ## Working agreement
 
