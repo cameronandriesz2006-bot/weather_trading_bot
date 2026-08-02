@@ -3,19 +3,22 @@
 The previous version of this file (~15KB, almost entirely weather-bot operating detail) is in
 `git log` — that strategy is now archived, and this file leads with what is actually open.
 
-## Where this project actually is (2026-07-27)
+## Where this project actually is (2026-08-02)
 
 Two strategies have been tried on Polymarket. **One is dead, one is open.**
 
 | | status |
 |---|---|
 | **Weather forecasting bot** (Edge-2) | **FAILED** its go/no-go 2026-07-26 at n=49, −$287. Taker leg off; the service still runs in shadow mode (prices + settles, opens nothing). Everything about it is in `archive/weather-bot/` — **you almost certainly do not need to read it.** |
-| **negRisk arb** | **AUDITED 2026-07-27 — headline rejected, grind unproven.** The $106/day replay was arithmetically honest but zero-latency; survival-credited + gas it is $47/day, of which the recurring ex-tail grind is ~$7–11/day *before* unpriced legging risk, on ~$1–2.5k locked. Verdict + go/no-go: `AUDIT_2026-07-27_arb_pnl_VERDICT.md`. Scanner keeps running to grow the sample; the shadow-fill probe is **LIVE in the scanner since 07-27 08:06Z** (`shadow` rows; read with `negrisk_shadow_report.py`). |
+| **negRisk arb** | **MEASURED, SMALL, DECAYING — go-live gated on Tier-A tests.** At 158h / 950 executions: **$18.34/day** survival-credited + gas, ex-top-5 grind **$11.97/day**. The shadow probe independently confirms the crediting ($14.97/day of arrival value actually survives 0.7s) — row-2 crediting was honest, the old $47/day was just a short sample. But daily net is decaying (07-29 $20.41 → 08-01 **$3.77**) and legging risk is still unmeasured. Plan + numbers: `GOLIVE_TESTPLAN_2026-08-02.md`. |
 
-**Read `AUDIT_2026-07-27_arb_pnl_VERDICT.md` first** — it supersedes the framing of
-`ARB_PNL_2026-07-27.md` (whose accounting it confirmed and whose crediting it rejected).
-`AUDIT_2026-07-26_negrisk_arb_VERDICT.md` still holds for what must not be re-litigated
-(token mapping, partition structure, snapshot coherence, the fee itself).
+**Read `GOLIVE_TESTPLAN_2026-08-02.md` first** — it carries the current numbers and the ordered
+test list, and supersedes the *numbers* in `AUDIT_2026-07-27_arb_pnl_VERDICT.md` (whose method and
+rejections still stand). `AUDIT_2026-07-26_negrisk_arb_VERDICT.md` still holds for what must not be
+re-litigated (token mapping, partition structure, snapshot coherence, the fee itself).
+
+**Next action: test A2, the legging simulation** — free, no new data needed, most likely to change
+the answer. Nothing measured so far tests whether all 11 legs can actually be filled.
 
 ## The arb, in plain terms
 
@@ -45,7 +48,7 @@ depth. All loss risk is in execution: a partial fill on an 11-leg set can pay **
 
 | service | what | notes |
 |---|---|---|
-| `negrisk-arb.service` | sweeps all ~135 boards every 2s, `--loop 2 --quiet` | **the only trading process left.** 0 restarts since 2026-07-26 13:41; writes `logs/negrisk_arb.jsonl` |
+| `negrisk-arb.service` | sweeps all ~140 boards every 2s, `--loop 2 --quiet` | **the only trading process left.** Running since 2026-07-29 06:21; writes `logs/negrisk_arb.jsonl` (~55MB). **Do not stop it — the sample is the asset.** |
 | `claude-remote.service` | phone access to Claude Code in this repo | |
 
 `weatherbot.service` was **stopped and disabled 2026-07-27** — 123 trades, all settled, −$477.85
@@ -72,7 +75,7 @@ Arb (current):
   reproducibility, `--episode-gap` / `--gas` / `--credit-row` expose the judgment calls
   (default crediting is the audited row-2-survival, not arrival).
 - `backend/data/negrisk_shadow_report.py` — shadow-probe survival report (per-probe and
-  per-episode); the input to the go/no-go (first read 2026-07-28).
+  per-episode); the input to the go/no-go (first read 2026-08-02 — see the test plan).
 - `backend/data/negrisk_arb_report.py` — window/opportunity reporting.
 - `backend/data/orderbook.py` — live CLOB book fetch + VWAP fill walk.
 - `backend/core/sizing.py` — `taker_fee_per_share` / `taker_fee_on_cash` (canonical fee math),
