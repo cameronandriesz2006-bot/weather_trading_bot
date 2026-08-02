@@ -13,7 +13,7 @@ reviewed, simple-terms verdicts.
 
 | test | agent | status | verdict (simple terms) |
 |---|---|---|---|
-| A2 legging sim (+30/171/500ms × seq/batch) | 1 | running | — |
+| A2 legging sim (+30/171/500ms × seq/batch) | 1 | **DONE, reviewed** | CONDITIONAL PASS — batch+FOK only ($6.65/day buy side, zero broken sets); sequential is fatal; go/no-go now hinges on unmeasured per-order rejection rate |
 | A1 decay decomposition | 2 | **DONE, reviewed** | NOT competition — arrivals fell ~40% (cause unknown) + tail luck; grind survival flat; run-rate now $8.12/day (ex-top-5 $5.88), ON the $5 bar |
 | A3 resolution verification | 3 | **DONE, reviewed** | PASS — 290/290 resolved boards paid exactly one $1 winner; zero voids; median capital return 10.4h after event end |
 | B4 real gas costs | 3 | **DONE, reviewed** | $0.024/trade assumption confirmed (0.4% off); taker fills cost user ZERO gas; relayer makes exits gasless |
@@ -109,6 +109,56 @@ reviewed, simple-terms verdicts.
 - **Free tiebreak already running:** Mon 08-03 / Tue 08-04 arrival counts. ≥230 eps/24h →
   weekly cycle (Sat was 128, prior Mon 309); ≤160 → structural decline. Weekend hypothesis has
   exactly 1 supporting + 1 contradicting observation — unsettled.
+
+### A2 — legging simulation (reviewed, PASSED — code audited line-by-line in the main session, headline reproduced to the cent)
+
+Fable review notes: evidence rule is strictly no-look-ahead (first observation AFTER leg landing,
+surviving prices only), the two-moment per-leg price fit is algebraically correct and reproduces
+logged fee to 7e-15, worst-case pays $0 on residue, and the batch blind spot is priced by an
+explicit `--batch-leg-fail` knob rather than hidden. Minor nit only (batch-mode abort accounting
+ignores post-failure legs; not a headlined column). The lenient variant self-refutes (exceeds the
+un-haircut replay = the tell) and is correctly quarantined.
+
+- **Sequential legging is fatal at ANY latency — this is a design mandate, not a kill.** At this
+  box's 171ms: 13.6% of executions break, $127/day of unhedged weather exposure carried to earn
+  $15.40/day of arb, expected value already negative (−$4.02/day), worst day −$367. The exact
+  unhedged weather bet that lost $477.85, recreated by accident. Never send legs one at a time.
+- **Batch (all 11 in one `POST /orders`, per-order FOK) removes every break the data can see:**
+  58.5% fill in full, 41.5% miss for free, **$6.65/day buy side** (+$3.13 short = **$9.78/day**),
+  worst day +$0.49. Latency tier barely matters for the grind (30ms→500ms: $6.69→$6.53) — the
+  batch design is latency-robust; speed matters for flashes and detection, not the grind.
+- **The cost of safety is half the edge**: FOK refuses shrunken books, which is where the big
+  money was ($6.65 floor vs $14.58/day GTC-partial ceiling — the latter reintroduces quantity-
+  imbalance risk the log can't see).
+- **Abort/unwind is never worth it**: ~10¢/set of spread+fee against a 0.72¢/set edge. If a set
+  breaks, hold the residue (expected damage ≈ spread+fee, not notional); the fix is not breaking.
+- **THE new binding constraint: per-order rejection rate inside a batch — unmeasurable from any
+  log.** At 0.5% → $5.69/day total (marginal); at 1% → $3.64 (FAIL); at 2% → negative. Eleven
+  independent legs amplify: 1% per-order = 6.5% broken sets. **D11's primary output must be this
+  rate, not P&L.**
+- Break rates are floors (2s snapshots can't see sub-second leg picking; hazard cross-check says
+  so), and the 30ms tier contains no real measurement — stated by the tool itself.
+
+## Synthesis — all six tests, read together (2026-08-02)
+
+**No kill. Conditional pass. The go/no-go now hangs on two cheap, specific measurements.**
+
+1. **The honest stacked number straddles the bar.** Full-window: batch+FOK $9.78/day → pass.
+   But A1's late-window run-rate ($8.12/day at 100% crediting) × the same batch haircut ≈
+   **$4.3/day → fail**. Whether the true run-rate is the full window or the late window is
+   exactly the Mon 08-03/Tue 08-04 arrival-count tiebreak (≥230 eps/24h = weekly cycle, ≤160 =
+   structural). **Free, already collecting, decides the bar question.**
+2. **Execution design is now fully determined, not open:** batch of 11 per-order-FOK orders in
+   one `POST /orders`, never sequential, never abort; short side unwinds via `convertPositions`;
+   redeem/convert via relayer (gasless). Buy-side capital locked ~10-24h; short-side recycles
+   in seconds ($14/day-per-$100 column real for shorts only).
+3. **The Tier-C/D gate is a $6/mo VPS** (Amsterdam/Dublin; NOT London/GB; verify geoblock from
+   the new box; ToS/residency caveat is the user's call). This box cannot trade at all.
+4. **D-tier should start with the SHORT side** (proposed change to the plan): benign partials,
+   instant recycle, a competitor already validates the mechanism at min size — measure the
+   per-order rejection rate there before risking the buy side's $0-cliff.
+5. What would still kill it: rejection rate ≥1% (D11), structural arrival decline (Mon/Tue),
+   or the late-window grind staying under ~$6/day with no flash tail to carry it.
 
 ## Detail files
 

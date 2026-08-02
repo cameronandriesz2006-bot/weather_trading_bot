@@ -10,15 +10,17 @@ Two strategies have been tried on Polymarket. **One is dead, one is open.**
 | | status |
 |---|---|
 | **Weather forecasting bot** (Edge-2) | **FAILED** its go/no-go 2026-07-26 at n=49, −$287. Taker leg off; the service still runs in shadow mode (prices + settles, opens nothing). Everything about it is in `archive/weather-bot/` — **you almost certainly do not need to read it.** |
-| **negRisk arb** | **MEASURED, SMALL, DECAYING — go-live gated on Tier-A tests.** At 158h / 950 executions: **$18.34/day** survival-credited + gas, ex-top-5 grind **$11.97/day**. The shadow probe independently confirms the crediting ($14.97/day of arrival value actually survives 0.7s) — row-2 crediting was honest, the old $47/day was just a short sample. But daily net is decaying (07-29 $20.41 → 08-01 **$3.77**) and legging risk is still unmeasured. Plan + numbers: `GOLIVE_TESTPLAN_2026-08-02.md`. |
+| **negRisk arb** | **TIER A+B DONE 2026-08-02 — conditional pass, no kill.** Honest executable number: **$9.78/day** full-window (batch+FOK $6.65 buy + $3.13 short) but only ~**$4.3/day** on the late-window run-rate — straddles the $5 bar. Execution design is now FIXED by measurement: batch of 11 per-order-FOK orders in one `POST /orders`, NEVER sequential (13.6% broken sets, −EV), never abort. Two things decide go/no-go: Mon 08-03/Tue 08-04 arrival counts (weekly-cycle vs structural decline) and the per-order rejection rate (D11's real output). **This box is GEO-BLOCKED (SG, close-only)** — Tier C/D require a ~$6/mo VPS (Amsterdam/Dublin, NOT London). Short side: `convertPositions` gives instant cash recycle + benign partials (start D-tier there). Buy side: capital provably locked to resolution. All of it: `TIER_AB_RESULTS_2026-08-02.md`. |
 
-**Read `GOLIVE_TESTPLAN_2026-08-02.md` first** — it carries the current numbers and the ordered
-test list, and supersedes the *numbers* in `AUDIT_2026-07-27_arb_pnl_VERDICT.md` (whose method and
-rejections still stand). `AUDIT_2026-07-26_negrisk_arb_VERDICT.md` still holds for what must not be
-re-litigated (token mapping, partition structure, snapshot coherence, the fee itself).
+**Read `TIER_AB_RESULTS_2026-08-02.md` first** — it carries the reviewed Tier-A/B verdicts and
+supersedes the *numbers* in `GOLIVE_TESTPLAN_2026-08-02.md` (whose tier structure and standing
+decisions still stand). The audit verdicts (`AUDIT_2026-07-27…`, `AUDIT_2026-07-26…`) still hold
+for method and for what must not be re-litigated (token mapping, partition structure, snapshot
+coherence, the fee itself).
 
-**Next action: test A2, the legging simulation** — free, no new data needed, most likely to change
-the answer. Nothing measured so far tests whether all 11 legs can actually be filled.
+**Next action: read Mon 08-03/Tue 08-04 arrival counts** (free tiebreak on the decay: ≥230
+episodes/24h = weekly cycle → bar passes; ≤160 = structural → marginal). VPS purchase + Tier C
+build are gated on that read and on the user's ToS/residency call.
 
 ## The arb, in plain terms
 
@@ -76,6 +78,9 @@ Arb (current):
   (default crediting is the audited row-2-survival, not arrival).
 - `backend/data/negrisk_shadow_report.py` — shadow-probe survival report (per-probe and
   per-episode); the input to the go/no-go (first read 2026-08-02 — see the test plan).
+- `backend/data/negrisk_legging_sim.py` — test A2: replays every buy episode as an 11-order
+  execution (sequential vs batch, FOK vs partial, swept latencies); the reason batch-only is a
+  hard rule. Audited + reproduced 2026-08-02; method in `reports/tier_ab/A2_legging.md`.
 - `backend/data/negrisk_arb_report.py` — window/opportunity reporting.
 - `backend/data/orderbook.py` — live CLOB book fetch + VWAP fill walk.
 - `backend/core/sizing.py` — `taker_fee_per_share` / `taker_fee_on_cash` (canonical fee math),
