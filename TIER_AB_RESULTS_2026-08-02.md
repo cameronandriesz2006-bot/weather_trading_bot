@@ -15,8 +15,8 @@ reviewed, simple-terms verdicts.
 |---|---|---|---|
 | A2 legging sim (+30/171/500ms × seq/batch) | 1 | running | — |
 | A1 decay decomposition | 2 | running | — |
-| A3 resolution verification | 3 | running | — |
-| B4 real gas costs | 3 | running | — |
+| A3 resolution verification | 3 | **DONE, reviewed** | PASS — 290/290 resolved boards paid exactly one $1 winner; zero voids; median capital return 10.4h after event end |
+| B4 real gas costs | 3 | **DONE, reviewed** | $0.024/trade assumption confirmed (0.4% off); taker fills cost user ZERO gas; relayer makes exits gasless |
 | B5 atomic path / early merge | 4 | **DONE, reviewed** | short side has an instant atomic cash-out; buy side provably locked to resolution; no atomic entry exists |
 | B6 API limits + VPS region | 4 | **DONE, reviewed** | **BLOCKER: this box is geo-blocked (SG)** — VPS in Amsterdam/Dublin required (NOT London); limits otherwise fine |
 
@@ -60,6 +60,33 @@ reviewed, simple-terms verdicts.
   174ms react → ~15ms stale + ~15ms react.
 - Consequence for the plan: C8 (end-to-end latency) must NOT be run from this box — it would
   measure the wrong machine.
+
+### A3 — resolution verification (reviewed, PASSED — HK anomaly independently re-verified on Gamma)
+
+- **290 boards checked, 290 clean**: every resolved board the scanner hit 07-27→08-02 paid
+  exactly one bucket $1 and the other ten $0. Zero voids/refunds/split payouts. Exhaustiveness
+  holds against reality, not just against `board_sanity()`'s logic.
+- Token-set drift 0/313 (the 11 tokens never changed after scan time); `negRiskAugmented`
+  false on all 368 events — genuinely absent, but worth adding as a `board_sanity()` gate.
+- **Capital timing**: money returns median **10.4h** after event end (p95 21.6h). One real
+  anomaly: the HK July-31 board (both twins) still unresolved 53h+ after event end with no UMA
+  proposal (re-verified 08-02 from the main session) — payout not at risk, but the *lockup tail*
+  is longer than the median suggests. Redemption trigger must key off the winning market
+  (losing buckets close before the winner, up to ~107min spread).
+
+### B4 — real gas (reviewed, PASSED — converges with agent 4's independent on-chain sample)
+
+- **The replay's $0.024/trade gas charge is fair**: blended over the actual trade mix,
+  self-paid batched gas is $0.0239/trade (0.4% off the assumption). No P&L revision needed.
+- **Taker fills cost the user zero gas** — operator pays (verified: trader proxy wallets hold
+  0 POL and trades settle anyway). Redeem/merge/convert have a **gasless relayer path**
+  (`relayer-v2.polymarket.com/submit`, 25/min limit); self-paid they're ~$0.01–0.05/board.
+  Batching is mandatory if self-custodying (unbatched 7-leg redemption ≈ 3×).
+- Independently re-derived the buy-side lockup conclusion (merge needs YES+NO of the same
+  condition → buy-the-board inventory can never merge) — two agents, same answer, different
+  methods. Buy side = hold-to-resolution economics, confirmed twice.
+- Flag for A2 (unverified by agent 3, schema question): it counted only ~3.7% of buy rows with
+  all 11 legs quoted simultaneously — A2 owns the log schema and should confirm or refute.
 
 ## Detail files
 
