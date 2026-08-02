@@ -14,7 +14,7 @@ reviewed, simple-terms verdicts.
 | test | agent | status | verdict (simple terms) |
 |---|---|---|---|
 | A2 legging sim (+30/171/500ms × seq/batch) | 1 | running | — |
-| A1 decay decomposition | 2 | running | — |
+| A1 decay decomposition | 2 | **DONE, reviewed** | NOT competition — arrivals fell ~40% (cause unknown) + tail luck; grind survival flat; run-rate now $8.12/day (ex-top-5 $5.88), ON the $5 bar |
 | A3 resolution verification | 3 | **DONE, reviewed** | PASS — 290/290 resolved boards paid exactly one $1 winner; zero voids; median capital return 10.4h after event end |
 | B4 real gas costs | 3 | **DONE, reviewed** | $0.024/trade assumption confirmed (0.4% off); taker fills cost user ZERO gas; relayer makes exits gasless |
 | B5 atomic path / early merge | 4 | **DONE, reviewed** | short side has an instant atomic cash-out; buy side provably locked to resolution; no atomic entry exists |
@@ -87,6 +87,28 @@ reviewed, simple-terms verdicts.
   methods. Buy side = hold-to-resolution economics, confirmed twice.
 - Flag for A2 (unverified by agent 3, schema question): it counted only ~3.7% of buy rows with
   all 11 legs quoted simultaneously — A2 owns the log schema and should confirm or refute.
+
+### A1 — decay decomposition (reviewed, PASSED — 91%-vs-28% survival figures reconciled: per-probe vs per-episode views, both in the report, same trend)
+
+- **Competition (a) is REJECTED on the body of the data.** Arrivals fell 261→162 episodes/24h
+  (−38%, permutation p=0.003) while every survival measure stayed flat: row-2 survival
+  0.687→0.689, grind per-episode 0.7s $-wt survival 73.9%→**77.1%** (improved), median depth
+  ratio 1.000 every day, lifetime 8.0s→8.2s. If bots were eating our grind, survival would
+  fall — it didn't. Decomposition of the fall: ~55% tail lottery (flashes drew small — 13th
+  bootstrap percentile, an ordinary bad draw), ~37% arrival-rate decline, ≤8% racing.
+- **The one pro-competition signal: the ≥$1 FLASHES are being raced harder** (per-episode $-wt
+  survival 19%→~0%, p≈0.03–0.07, ~20 episodes/cell, non-independent tests). Worth ~$1.2/day.
+  Consistent with the audit's Milan finding. This is where a VPS+websocket would fight; the
+  grind doesn't need it.
+- **The arrival-rate fall is real and its mechanism is UNIDENTIFIED** — Gamma volume on these
+  boards only −13% while fee-beating arrivals −59%, and the fee-blind `illusion` metric
+  *doubled*. Not "market went quiet", not "spreads compressed". Do not read as "seasonal,
+  it'll come back."
+- **Use $8.12/day (ex-top-5 $5.88/day) as the run-rate** — the LATE-window (07-30→08-01)
+  number, not the full-window $18.34. The grind now sits ON the $5/day bar, not above it.
+- **Free tiebreak already running:** Mon 08-03 / Tue 08-04 arrival counts. ≥230 eps/24h →
+  weekly cycle (Sat was 128, prior Mon 309); ≤160 → structural decline. Weekend hypothesis has
+  exactly 1 supporting + 1 contradicting observation — unsettled.
 
 ## Detail files
 
