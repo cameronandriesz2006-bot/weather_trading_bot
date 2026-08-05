@@ -32,6 +32,10 @@ archive/weather-bot/logs/
 .env.local
 .env.*.local
 
+# Cached CLOB L2 API creds (derived once from the private key; the secret is an order-
+# placement credential and cannot be re-fetched from the server). Local, 0600, never travels.
+.clob_creds.json
+
 # IDE
 .idea/
 .vscode/

@@ -97,3 +97,43 @@ DB — is in `archive/weather-bot/`. See its README.
 One change at a time, explained in plain English, keep the services running. Answers stay
 concise. Judge on measured numbers, not on whether it runs — and say plainly when a number is
 carried by a single observation.
+
+## Update 2026-08-04 — migrated to Amsterdam, geo-block LIFTED
+
+This box is the **Amsterdam clone** (209.250.243.212, Vultr `ams`) of the original Singapore
+server, which is destroyed. Everything above saying "THIS BOX IS GEO-BLOCKED" is now historical:
+measured here 2026-08-04, `POST /order` returns **401 missing-address-header (past the geo
+layer)** vs SG's 403 region-block — **NL is frontend-close-only, API unrestricted.** RTT to the
+CLOB is ~2ms (was ~171ms), sweeps fetch in ~0.33s (was ~1.6s). `logs/negrisk_arb.jsonl` carries
+the full SG history; a `{"type":"note"}` row marks the vantage cutover (~11:03 UTC) — latency-
+sensitive stats straddling it compare different vantages. The clone's pre-cutover log is
+`logs/negrisk_arb_ams_warmup.jsonl`. Tier C (order path) is now unblocked; capital $250.
+
+## Update 2026-08-05 — arrival tiebreak read + Tier C BUILT AND AUDITED
+
+**The 08-03/08-04 arrival read came back soft**: 158 / 211 episodes (thresholds: ≥230 cyclical,
+≤160 structural; 08-04 inflated by the faster AMS vantage). Partly structural — but trailing
+5-day is ~$11.3/day credited ≈ ~$6/day executable, above the $5 bar. User chose to proceed.
+
+**Tier C (C7 signing, C8 latency, C9 fill policy) is built**: `backend/exec/` per
+`TIER_C_BUILD_PLAN_2026-08-05.md` (3 Opus builders + adversarial Fable audit,
+`AUDIT_2026-08-05_tier_c_VERDICT.md` — no fillable path found; both MUST-FIXes applied,
+regression-tested). 80 tests green. `py-clob-client==0.34.6` pinned; **httpx bumped
+0.26→0.28.1** — scanner verified compatible, but the running service still holds 0.26 in
+memory; its next restart is the first real test.
+
+**C8 headline (`reports/tier_c/C8_latency.md`): latency does NOT kill the edge from here.**
+Scored→submit ≈ 0.08s (sign 53ms + wire 28ms) vs the 0.7s window where 28.1% of arrival value
+survives — the $9.78/day executable figure needs no AMS latency haircut. **The binding term is
+detection: the 2s sweep cadence is 71–83% of the see→submit chain.** (The "~2ms RTT" above is
+the Cloudflare edge; a real API call is ~20–30ms.) New hazards for the executor: `tick_size_ttl`
+expiry silently adds ~590ms of metadata GETs inside `build_signed` every 5 min (keep one warm
+client, never construct per opportunity); rare ~5s DNS stalls (~1%) → real orders want FOK + a
+sub-second client timeout. C9 default is unwind-on-break (tail protection on a $250 bankroll,
+vs A2 §4.3's expected-value hold — configurable, tradeoff asserted in tests).
+
+**Deferred until the user supplies a key** (`POLYMARKET_PRIVATE_KEY` / `POLYMARKET_FUNDER_ADDRESS`
+/ `POLYMARKET_SIGNATURE_TYPE`, see `.env.example`): the live 401→auth→accepted dry run (C7's
+final proof), authenticated latency legs, D-tier. Audit SHOULD-FIX items are listed in the
+verdict doc; none block D-tier prep. `claude-remote.service` stopped + disabled 2026-08-05
+(user call, frees ~115MB on this 950MB box) — `systemctl enable --now claude-remote` restores it.
