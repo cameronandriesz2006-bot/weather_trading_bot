@@ -63,6 +63,16 @@ bitarray==3.10.0
 pycryptodome==3.23.0
 h2==4.4.1                    # httpx[http2] extra, required by py-clob-client
 requests==2.34.2             # py-builder-signing-sdk
+# Tier C detection — WS shadow feed (2026-08-05)
+# backend/data/negrisk_ws_feed.py only. Already present transitively via uvicorn[standard];
+# pinned explicitly because the feed depends on two behaviours, not just an import:
+#   * `connect(max_size=None)` — the CLOB sends its initial book dump as ONE frame, 1.05MB for a
+#     500-asset shard, and the library's 1 MiB default would reject our own subscription;
+#   * `connect(ping_interval=None)` — this channel's keepalive is an application-level text
+#     "PING"/"PONG", not a protocol ping, so the library's ping machinery must stay off.
+# 16.0 is the version those were measured on. The scanner does not import this.
+websockets==16.0
+
 # NOT a dependency: web3. py-clob-client signs EIP-712 orders with eth-account directly and
 # talks to the CLOB over HTTP; nothing in the order path needs a JSON-RPC node. Tier D
 # (on-chain merge/redeem/convertPositions) is the first thing that will.

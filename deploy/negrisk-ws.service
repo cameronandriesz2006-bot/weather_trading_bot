@@ -1,0 +1,28 @@
+[Unit]
+Description=negRisk WS shadow detector (Tier C detection-latency measurement, logs only)
+After=network-online.target
+Wants=network-online.target
+# With RestartSec=10 the default 10s start-limit window can never trip; this pair turns a
+# would-be infinite OOM flap loop into "5 tries per 10 min, then stop" (audit MUST-FIX 3).
+StartLimitIntervalSec=600
+StartLimitBurst=5
+
+[Service]
+Type=simple
+WorkingDirectory=/root/weather_trading_bot
+Environment=PYTHONPATH=/root/weather_trading_bot
+Environment=PYTHONUNBUFFERED=1
+ExecStart=/root/weather_trading_bot/venv/bin/python -m backend.data.negrisk_ws_feed --quiet
+Restart=always
+RestartSec=10
+# Measured steady state on the full 153-board / 3366-token universe: ~104MB RSS after the 60s
+# gc+malloc_trim, ~13% of one core. 150M leaves headroom for a universe that grows and kills the
+# process rather than the 950MB box if it ever leaks. Nothing depends on this service.
+# MemoryHigh throttles+reclaims before MemoryMax kills (audit MUST-FIX 3).
+MemoryHigh=130M
+MemoryMax=150M
+StandardOutput=append:/root/weather_trading_bot/logs/negrisk_ws_run.log
+StandardError=append:/root/weather_trading_bot/logs/negrisk_ws_run.log
+
+[Install]
+WantedBy=multi-user.target

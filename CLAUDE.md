@@ -132,6 +132,17 @@ client, never construct per opportunity); rare ~5s DNS stalls (~1%) → real ord
 sub-second client timeout. C9 default is unwind-on-break (tail protection on a $250 bankroll,
 vs A2 §4.3's expected-value hold — configurable, tradeoff asserted in tests).
 
+**WS shadow detector LIVE since 2026-08-05 ~11:55 UTC** (`negrisk-ws.service`,
+`backend/data/negrisk_ws_feed.py`): subscribes the whole board universe (7 sharded WS
+connections, ~1500 frames/s, ~15% CPU, ~105MB), rescores with the scanner's own optimizer,
+logs to `logs/negrisk_ws_detect.jsonl`. Shadow only — nothing depends on it; the sweep stays
+the baseline. Audited (`AUDIT_2026-08-05_ws_feed_VERDICT.md`), 3 MUST-FIXes applied. **Next
+read: ≥24h after start, diff WS vs sweep detection on shared episodes** — re-cluster WS rows
+across restarts by slug+side under the 300s rule (`run` field marks restarts; episode ids
+reset). Builder's 6-min validation (preserved in `logs/negrisk_ws_detect_validation_2026-08-05.jsonl`)
+caught a $1.60-net 163ms episode the 2s sweep provably missed. Sweep stays at `--loop 2`
+until the diff is read.
+
 **Deferred until the user supplies a key** (`POLYMARKET_PRIVATE_KEY` / `POLYMARKET_FUNDER_ADDRESS`
 / `POLYMARKET_SIGNATURE_TYPE`, see `.env.example`): the live 401→auth→accepted dry run (C7's
 final proof), authenticated latency legs, D-tier. Audit SHOULD-FIX items are listed in the
