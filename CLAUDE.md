@@ -148,3 +148,19 @@ until the diff is read.
 final proof), authenticated latency legs, D-tier. Audit SHOULD-FIX items are listed in the
 verdict doc; none block D-tier prep. `claude-remote.service` stopped + disabled 2026-08-05
 (user call, frees ~115MB on this 950MB box) — `systemctl enable --now claude-remote` restores it.
+
+## Update 2026-08-08 — the WS-vs-sweep diff is read: WS wins detection
+
+The scheduled comparison read is done (`WS_VS_SWEEP_2026-08-08.md`, tool
+`backend/data/negrisk_ws_sweep_diff.py`). Over the 70.1h both ran (no restarts either side):
+the live-feed watcher saw **1,121** opportunity windows vs the 2s checker's **361**, including
+95.3% of everything the checker saw (typically **1.23s sooner**, median). The 17 checker-only
+windows look like stitched-snapshot mirages — 16/17 single sightings, the 7 largest all $0 on
+the checker's own 0.3s re-check, never seen by the feed's instant-coherent view. The checker
+missed 764 windows (median lifespan **0.05s**; 623/764 shorter than one 2.4s interval) worth
+$202.76 at peak (≈$69/day) — honest actionable slice (lived ≥0.7s): **≈$18.9–21.7/day of
+additional detectable surface**, an upper bound, not bookable profit (survival discounts still
+apply). **Decision: the live feed drives detection when the executor goes live; the sweep stays
+running unchanged** (cross-check + 0.3s-re-check survival data + log continuity — the sample is
+the asset). Gates unchanged: everything live still waits on the user's wallet key. From
+2026-08-08 the user also asked that everything be presented in plain terms, no jargon.
