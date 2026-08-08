@@ -164,3 +164,22 @@ apply). **Decision: the live feed drives detection when the executor goes live; 
 running unchanged** (cross-check + 0.3s-re-check survival data + log continuity — the sample is
 the asset). Gates unchanged: everything live still waits on the user's wallet key. From
 2026-08-08 the user also asked that everything be presented in plain terms, no jargon.
+
+## Update 2026-08-08 (pm) — key installed, bankroll funded, PUSD MIGRATION discovered
+
+- **The wallet key is in** (`.env`: signature type 0, direct EOA
+  `0xFBE59D4217e3456F51A02183117332EA80ff8865`; key verified to control that address, never
+  committed or logged). Bankroll on-chain: **253.85 PUSD + ~183 POL gas**.
+  `python3 -m backend.exec.wallet_status` re-checks in one command.
+- **Polymarket migrated settlement to PUSD** (`0xC011a7E1…2DFB`) on new exchange contracts:
+  regular `0xe1111800…b996b`, negRisk `0xe2222d27…310f59`; old exchanges idle; adapter and
+  conditional-tokens contracts unchanged. Both official client libraries still carry the OLD
+  addresses — C7's signing must override them by hand. Full evidence + open items:
+  **`PUSD_MIGRATION_2026-08-08.md`**. Found because the user challenged the USDC.e assumption —
+  the challenge was right, my stale-contract check was wrong, and the detour cost ~$4.70.
+- **Weather fee schedule verified UNCHANGED post-migration** (live 08-09 London board:
+  `weather_fees`, rate 0.05, takerOnly, rebate 0.25) — Tier A/B P&L math stands. Crypto
+  up/down markets run 7%: the fee factor is market-class-specific, never assume 5% elsewhere.
+- **Next, in order** (per the migration doc): confirm new addresses officially → point C7
+  signing at them (build + audit) → PUSD approvals to the new contracts → tiny live dry-run
+  order → authenticated latency legs → D-tier. Scanner + WS feed unaffected and running.
